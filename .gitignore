@@ -1,0 +1,10 @@
+# File xác thực của Google
+client_secret.json
+token.json
+
+# Thư mục môi trường ảo của Python
+venv/
+__pycache__/
+
+# Các file hệ điều hành (tùy chọn nhưng nên có)
+.DS_Store

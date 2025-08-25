@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PVOIL Nam Định - Công cụ Tự động hóa</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .tab-button.active { border-color: #4f46e5; background-color: #eef2ff; color: #4f46e5; font-weight: 600; }
+        .loader { border: 4px solid #f3f3f3; border-radius: 50%; border-top: 4px solid #ffffff; width: 20px; height: 20px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #log-container { font-family: 'Courier New', Courier, monospace; max-height: 200px; }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen py-8">
+
+    <div class="w-full max-w-4xl bg-white rounded-lg shadow-xl p-8">
+        <!-- Header -->
+        <div class="flex items-center justify-center space-x-4 mb-6">
+            <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo Công Ty" class="h-20" onerror="this.style.display='none'"> 
+            <div class="text-center">
+                <h2 class="text-xl font-bold text-red-600 leading-tight">CÔNG TY CỔ PHẦN XĂNG DẦU</h2>
+                <h2 class="text-xl font-bold text-red-600 leading-tight">DẦU KHÍ NAM ĐỊNH</h2>
+            </div>
+        </div>
+        <h1 class="text-xl font-bold text-center text-blue-600 mb-6">Công cụ Tự động hóa Báo cáo PVOIL</h1>
+
+        <!-- Vùng thông báo -->
+        <div id="status-message" class="hidden mb-4 p-4 rounded-md text-center"></div>
+
+        <!-- Tabs -->
+        <div class="border-b border-gray-200 mb-6">
+            <nav class="-mb-px flex space-x-4" aria-label="Tabs">
+                <button id="tab-baocao" class="tab-button active whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm">Báo cáo</button>
+                <button id="tab-doisoat" class="tab-button whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm">Đối soát</button>
+            </nav>
+        </div>
+
+        <!-- Nội dung Tabs -->
+        <div>
+            <!-- Tab 1: Báo cáo -->
+            <div id="content-baocao" class="tab-content space-y-6">
+                <!-- (Giữ nguyên không thay đổi) -->
+                <div>
+                    <label for="report-type" class="block text-lg font-medium text-gray-700 mb-2">1. Chọn loại báo cáo:</label>
+                    <select id="report-type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md shadow-sm">
+                        <option value="BH03">Báo cáo Bán hàng (BH03)</option>
+                        <option value="NXT" disabled>Báo cáo Nhập - Xuất - Tồn (Đang phát triển)</option>
+                        <option value="CongNo" disabled>Báo cáo Công nợ (Đang phát triển)</option>
+                    </select>
+                </div>
+                 <div>
+                    <label for="report-date" class="block text-lg font-medium text-gray-700 mb-2">2. Chọn ngày báo cáo:</label>
+                    <input type="date" id="report-date" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2">
+                </div>
+                <div>
+                    <button id="download-report-btn" type="button" class="w-full flex items-center justify-center py-3 px-4 border rounded-md shadow-sm text-lg font-medium text-white bg-blue-600 hover:bg-blue-700">
+                        <span id="btn-text-report">Tải báo cáo lên Google Drive</span>
+                        <div id="btn-loader-report" class="loader hidden ml-3"></div>
+                    </button>
+                </div>
+                <div id="log-container" class="hidden bg-gray-900 text-white text-sm rounded-md p-4 overflow-y-auto border-4 border-gray-700"><div id="log-content"></div></div>
+            </div>
+
+            <!-- Tab 2: Đối soát -->
+            <div id="content-doisoat" class="tab-content hidden space-y-6">
+                 <form id="reconcile-form" class="space-y-6">
+                    <div>
+                        <label for="reconcile-type" class="block text-lg font-medium text-gray-700 mb-2">1. Chọn loại đối soát:</label>
+                        <select id="reconcile-type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md shadow-sm">
+                            <option value="SanLuong">Đối soát Sản lượng Bán hàng</option>
+                            <option value="DoanhThu" disabled>Đối soát Doanh thu (Đang phát triển)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="reconcile-date" class="block text-lg font-medium text-gray-700 mb-2">2. Chọn ngày đối soát:</label>
+                        <input type="date" id="reconcile-date" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2">
+                    </div>
+                    <div>
+                        <label for="accounting-file" class="block text-lg font-medium text-gray-700 mb-2">3. Tải lên file từ phần mềm kế toán:</label>
+                        <input type="file" id="accounting-file" required class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
+                    </div>
+                     <div>
+                        <button id="reconcile-btn" type="submit" class="w-full flex items-center justify-center py-3 px-4 border rounded-md shadow-sm text-lg font-medium text-white bg-green-600 hover:bg-green-700">
+                            <span id="btn-text-reconcile">Thực hiện Đối soát</span>
+                            <div id="btn-loader-reconcile" class="loader hidden ml-3"></div>
+                        </button>
+                    </div>
+                </form>
+                <!-- Vùng hiển thị kết quả đối soát -->
+                <div id="reconciliation-results" class="hidden">
+                    <!-- Nút tải Excel sẽ được thêm vào đây -->
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="mt-8 border-t pt-4 text-center">
+            <p class="text-xs text-gray-600">Nếu gặp khó khăn, vui lòng liên hệ tác giả để được hỗ trợ.</p>
+            <p class="text-xs text-gray-600">Bản quyền thuộc về Nguyễn Trọng Hoàn - 0902069469</p>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // === Biến toàn cục để lưu kết quả đối soát ===
+            let reconciliationData = [];
+
+            // --- Logic chuyển tab ---
+            const tabs = document.querySelectorAll('.tab-button');
+            tabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    tabs.forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+                    document.getElementById('content-' + tab.id.split('-')[1]).classList.remove('hidden');
+                });
+            });
+
+            // --- Logic cho Tab 1: Tải báo cáo ---
+            const downloadBtn = document.getElementById('download-report-btn');
+            const reportBtnText = document.getElementById('btn-text-report');
+            const reportBtnLoader = document.getElementById('btn-loader-report');
+            const logContainer = document.getElementById('log-container');
+            const logContent = document.getElementById('log-content');
+            let eventSource;
+
+            downloadBtn.addEventListener('click', () => {
+                const reportType = document.getElementById('report-type').value;
+                const reportDate = document.getElementById('report-date').value;
+                startDownloadProcess(reportType, reportDate);
+            });
+            
+            function startDownloadProcess(reportType, reportDate) {
+                if (eventSource) eventSource.close();
+                if (!reportDate) {
+                    showMessage({ status: 'error', message: 'Vui lòng chọn ngày báo cáo.' });
+                    return;
+                }
+                setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, true, 'Đang xử lý...');
+                hideMessage();
+                logContainer.classList.remove('hidden');
+                logContent.innerHTML = '';
+
+                const params = new URLSearchParams({ report_type: reportType, report_date: reportDate });
+                eventSource = new EventSource(`/download_report_stream?${params.toString()}`);
+
+                eventSource.onmessage = function(event) {
+                    const data = event.data;
+                    if (data.startsWith('FINAL_MESSAGE:')) {
+                        const result = JSON.parse(data.substring('FINAL_MESSAGE:'.length));
+                        showMessage(result);
+                        eventSource.close();
+                        setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
+                    } else if (data.startsWith('ERROR:')) {
+                        const result = JSON.parse(data.substring('ERROR:'.length));
+                        showMessage(result);
+                        eventSource.close();
+                        setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
+                    } else {
+                        logContent.innerHTML += data + '<br>';
+                        logContainer.scrollTop = logContainer.scrollHeight;
+                    }
+                };
+                eventSource.onerror = function(err) {
+                    showMessage({ status: 'error', message: 'Mất kết nối với máy chủ. Vui lòng thử lại.' });
+                    eventSource.close();
+                    setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
+                };
+            }
+
+            // --- Logic cho Tab 2: Đối soát ---
+            const reconcileForm = document.getElementById('reconcile-form');
+            const reconcileBtn = document.getElementById('reconcile-btn');
+            const reconcileBtnText = document.getElementById('btn-text-reconcile');
+            const reconcileBtnLoader = document.getElementById('btn-loader-reconcile');
+            const resultsContainer = document.getElementById('reconciliation-results');
+
+            reconcileForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const reconcileDate = document.getElementById('reconcile-date').value;
+                const accountingFile = document.getElementById('accounting-file').files[0];
+
+                if (!reconcileDate || !accountingFile) {
+                    showMessage({ status: 'error', message: 'Vui lòng chọn ngày và tải lên file kế toán.' });
+                    return;
+                }
+
+                setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, true, 'Đang đối soát...');
+                hideMessage();
+                resultsContainer.classList.add('hidden');
+                reconciliationData = []; // Reset dữ liệu cũ
+
+                const formData = new FormData();
+                formData.append('reconcile_date', reconcileDate);
+                formData.append('accounting_file', accountingFile);
+
+                try {
+                    const response = await fetch('/reconcile', { method: 'POST', body: formData });
+                    const result = await response.json();
+
+                    if (result.status === 'report_not_found') {
+                        if (confirm(result.message + "\nBạn có muốn tải báo cáo POS cho ngày này ngay bây giờ không?")) {
+                            document.getElementById('tab-baocao').click();
+                            document.getElementById('report-date').value = reconcileDate;
+                            startDownloadProcess('BH03', reconcileDate);
+                        }
+                    } else if (result.status === 'success') {
+                        reconciliationData = result.data; // Lưu dữ liệu để tải về
+                        renderReconciliationResults(reconciliationData);
+                        showMessage({ status: 'success', message: 'Đối soát hoàn tất.' });
+                    } else {
+                        showMessage(result);
+                    }
+                } catch (error) {
+                    showMessage({ status: 'error', message: 'Lỗi kết nối khi đối soát.' });
+                } finally {
+                    setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, false, 'Thực hiện Đối soát');
+                }
+            });
+
+            function renderReconciliationResults(data) {
+                // Thêm nút tải Excel
+                let html = `<div class="flex justify-between items-center mb-4">
+                                <h3 class="text-xl font-bold text-gray-800">Kết quả Đối soát</h3>
+                                <button id="download-excel-btn" class="py-2 px-4 border rounded-md shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700">
+                                    Tải về file Excel
+                                </button>
+                            </div>
+                            <div class="overflow-x-auto rounded-lg border border-gray-200">
+                                <table class="min-w-full divide-y-2 divide-gray-200 bg-white text-sm">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
+                                            <th class="px-4 py-3 font-semibold text-left">Mặt hàng</th>
+                                            <th class="px-4 py-3 font-semibold text-right">Sản lượng POS</th>
+                                            <th class="px-4 py-3 font-semibold text-right">Sản lượng Kế toán</th>
+                                            <th class="px-4 py-3 font-semibold text-center">Kết quả</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-200">`;
+                
+                data.forEach(item => {
+                    const isMismatch = !item.is_match;
+                    const rowClass = isMismatch ? 'bg-yellow-50' : '';
+                    const posQty = typeof item.pos_quantity === 'number' ? item.pos_quantity.toLocaleString('vi-VN') : item.pos_quantity;
+                    const sseQty = typeof item.sse_quantity === 'number' ? item.sse_quantity.toLocaleString('vi-VN') : item.sse_quantity;
+                    const resultCell = isMismatch 
+                        ? `<span class="font-bold text-red-600">LỆCH</span>` 
+                        : `<span class="font-bold text-green-600">✅</span>`;
+
+                    html += `<tr class="${rowClass}">
+                                <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
+                                <td class="px-4 py-3 text-gray-700">${item.product_name}</td>
+                                <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posQty}</td>
+                                <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseQty}</td>
+                                <td class="px-4 py-3 text-center">${resultCell}</td>
+                             </tr>`;
+                });
+
+                html += `</tbody></table></div>`;
+                resultsContainer.innerHTML = html;
+                resultsContainer.classList.remove('hidden');
+
+                // Gán sự kiện click cho nút tải Excel sau khi nó được tạo ra
+                document.getElementById('download-excel-btn').addEventListener('click', downloadExcelFile);
+            }
+            
+            // === Hàm mới để tải file Excel ===
+            async function downloadExcelFile() {
+                if (reconciliationData.length === 0) {
+                    alert("Không có dữ liệu để tải về.");
+                    return;
+                }
+                
+                const btn = document.getElementById('download-excel-btn');
+                btn.textContent = 'Đang tạo file...';
+                btn.disabled = true;
+
+                try {
+                    const response = await fetch('/download_excel', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(reconciliationData)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Lỗi từ server khi tạo file Excel.');
+                    }
+
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = url;
+                    // Lấy tên file từ header (nếu có), hoặc đặt tên mặc định
+                    const disposition = response.headers.get('Content-Disposition');
+                    let filename = 'KetQuaDoiSoat.xlsx';
+                    if (disposition && disposition.indexOf('attachment') !== -1) {
+                        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                        const matches = filenameRegex.exec(disposition);
+                        if (matches != null && matches[1]) { 
+                            filename = matches[1].replace(/['"]/g, '');
+                        }
+                    }
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+
+                } catch (error) {
+                    console.error('Lỗi khi tải file Excel:', error);
+                    alert('Đã xảy ra lỗi khi tải file. Vui lòng thử lại.');
+                } finally {
+                    btn.textContent = 'Tải về file Excel';
+                    btn.disabled = false;
+                }
+            }
+
+            // --- Hàm tiện ích ---
+            const statusMessage = document.getElementById('status-message');
+            function setButtonLoading(btn, btnText, btnLoader, isLoading, loadingText) {
+                if (isLoading) {
+                    btnText.textContent = loadingText;
+                    btnLoader.classList.remove('hidden');
+                    btn.disabled = true;
+                    btn.classList.add('opacity-75', 'cursor-not-allowed');
+                } else {
+                    btnText.textContent = btn.id === 'download-report-btn' ? 'Tải báo cáo lên Google Drive' : 'Thực hiện Đối soát';
+                    btnLoader.classList.add('hidden');
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-75', 'cursor-not-allowed');
+                }
+            }
+            function showMessage(result) {
+                statusMessage.innerHTML = result.message;
+                statusMessage.className = 'mb-4 p-4 rounded-md text-center';
+                if (result.status === 'success') statusMessage.classList.add('bg-green-100', 'text-green-800');
+                else if (result.status === 'error') statusMessage.classList.add('bg-red-100', 'text-red-800');
+                else statusMessage.classList.add('bg-blue-100', 'text-blue-800');
+                statusMessage.classList.remove('hidden');
+            }
+            function hideMessage() {
+                statusMessage.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>

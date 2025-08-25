@@ -1,0 +1,11 @@
+Flask
+requests
+pandas
+openpyxl
+gspread
+gspread-dataframe
+google-api-python-client
+google-auth-oauthlib
+lxml
+gunicorn
+pytz
