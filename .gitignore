@@ -8,3 +8,5 @@ __pycache__/
 
 # Các file hệ điều hành (tùy chọn nhưng nên có)
 .DS_Store
+build/
+dist/

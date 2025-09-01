@@ -24,12 +24,6 @@
         </div>
         <h1 class="text-xl font-bold text-center text-blue-600 mb-6">Công cụ Tự động hóa Báo cáo PVOIL</h1>
 
-        <div class="flex justify-center mb-6">
-            <button id="exitButton" class="py-2 px-5 border rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
-                Thoát Ứng Dụng
-            </button>
-        </div>
-
         <div id="status-message" class="hidden mb-4 p-4 rounded-md text-center"></div>
 
         <div class="border-b border-gray-200 mb-6">
@@ -46,6 +40,7 @@
                     <select id="report-type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md shadow-sm">
                         <option value="BH03">Báo cáo Bán hàng (BH03)</option>
                         <option value="NXT" disabled>Báo cáo Nhập - Xuất - Tồn (Đang phát triển)</option>
+                        <option value="CongNo" disabled>Báo cáo Công nợ (Đang phát triển)</option>
                     </select>
                 </div>
                  <div>
@@ -68,7 +63,7 @@
                         <select id="reconcile-type" name="reconcile_type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md shadow-sm">
                             <option value="SanLuong">Đối soát Sản lượng Bán hàng</option>
                             <option value="TienMat">Đối soát Tiền mặt</option>
-                            <option value="CongNo">Đối soát Công nợ</option>
+                            <option value="DoanhThu" disabled>Đối soát Doanh thu (Đang phát triển)</option>
                         </select>
                     </div>
                     <div>
@@ -101,20 +96,6 @@
         document.addEventListener('DOMContentLoaded', function() {
             // === Biến toàn cục để lưu kết quả đối soát ===
             let reconciliationResultPayload = {}; // Lưu cả data và type
-
-            // MỚI: Thêm logic cho nút Thoát
-            document.getElementById('exitButton').addEventListener('click', function() {
-                if (confirm('Bạn có chắc chắn muốn tắt ứng dụng không?')) {
-                    fetch('/shutdown', { method: 'POST' })
-                        .then(response => {
-                            document.body.innerHTML = '<div class="flex items-center justify-center min-h-screen"><h1 class="text-2xl font-bold text-gray-700">Đã tắt máy chủ. Bạn có thể đóng tab này.</h1></div>';
-                        })
-                        .catch(error => {
-                            console.error('Lỗi khi tắt máy chủ:', error);
-                            alert('Không thể tắt máy chủ. Vui lòng đóng cửa sổ chương trình theo cách thủ công.');
-                        });
-                }
-            });
 
             // --- Logic chuyển tab ---
             const tabs = document.querySelectorAll('.tab-button');
@@ -221,86 +202,29 @@
                         showMessage(result);
                     }
                 } catch (error) {
-                    console.error("Lỗi khi đối soát:", error);
-                    showMessage({ status: 'error', message: 'Lỗi kết nối hoặc lỗi server khi đối soát. Vui lòng kiểm tra console (F12) để biết thêm chi tiết.' });
+                    showMessage({ status: 'error', message: 'Lỗi kết nối khi đối soát.' });
                 } finally {
                     setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, false, 'Thực hiện Đối soát');
                 }
             });
 
             function renderReconciliationResults(data, type) {
-                let tableHeadersHtml = '';
-                let tableBodyHtml = '';
-
-                // Cập nhật để thêm logic cho CongNo
+                let headers;
                 if (type === 'TienMat') {
-                    tableHeadersHtml = `
-                        <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
-                        <th class="px-4 py-3 font-semibold text-left">Đối tượng</th>
-                        <th class="px-4 py-3 font-semibold text-right">Tiền mặt POS (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-right">Tiền mặt Kế toán (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    data.forEach(item => {
-                        const isMismatch = !item.is_match;
-                        const rowClass = isMismatch ? 'bg-red-50' : '';
-                        const posVal = typeof item.pos_value === 'number' ? item.pos_value.toLocaleString('vi-VN') : item.pos_value;
-                        const sseVal = typeof item.sse_value === 'number' ? item.sse_value.toLocaleString('vi-VN') : item.sse_value;
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${rowClass}">
-                            <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.product_name}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
-                            <td class="px-4 py-3 text-center">${resultCell}</td>
-                        </tr>`;
-                    });
-                } else if (type === 'CongNo') {
-                    tableHeadersHtml = `
-                        <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
-                        <th class="px-4 py-3 font-semibold text-left">Mã Khách</th>
-                        <th class="px-4 py-3 font-semibold text-left">Tên Khách hàng</th>
-                        <th class="px-4 py-3 font-semibold text-right">Phát sinh nợ POS (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-right">Phát sinh nợ SSE (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    data.forEach(item => {
-                        const isMismatch = !item.is_match;
-                        const rowClass = isMismatch ? 'bg-red-50' : '';
-                        const posVal = typeof item.pos_value === 'number' ? item.pos_value.toLocaleString('vi-VN') : item.pos_value;
-                        const sseVal = typeof item.sse_value === 'number' ? item.sse_value.toLocaleString('vi-VN') : item.sse_value;
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span><br><span class="text-xs text-gray-500">${item.status || ''}</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${rowClass}">
-                            <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.customer_code}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.customer_name}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
-                            <td class="px-4 py-3 text-center">${resultCell}</td>
-                        </tr>`;
-                    });
+                    headers = {
+                        col2: 'Đối tượng',
+                        col3: 'Tiền mặt POS (VND)',
+                        col4: 'Tiền mặt Kế toán (VND)'
+                    };
                 } else { // SanLuong
-                    tableHeadersHtml = `
-                        <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
-                        <th class="px-4 py-3 font-semibold text-left">Mặt hàng</th>
-                        <th class="px-4 py-3 font-semibold text-right">Sản lượng POS</th>
-                        <th class="px-4 py-3 font-semibold text-right">Sản lượng Kế toán</th>
-                        <th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    data.forEach(item => {
-                        const isMismatch = !item.is_match;
-                        const rowClass = isMismatch ? 'bg-red-50' : '';
-                        const posVal = typeof item.pos_value === 'number' ? item.pos_value.toLocaleString('vi-VN') : item.pos_value;
-                        const sseVal = typeof item.sse_value === 'number' ? item.sse_value.toLocaleString('vi-VN') : item.sse_value;
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${rowClass}">
-                            <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.product_name}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
-                            <td class="px-4 py-3 text-center">${resultCell}</td>
-                        </tr>`;
-                    });
+                    headers = {
+                        col2: 'Mặt hàng',
+                        col3: 'Sản lượng POS',
+                        col4: 'Sản lượng Kế toán'
+                    };
                 }
                 
-                let fullHtml = `<div class="flex justify-between items-center mb-4">
+                let html = `<div class="flex justify-between items-center mb-4">
                                 <h3 class="text-xl font-bold text-gray-800">Kết quả Đối soát</h3>
                                 <button id="download-excel-btn" class="py-2 px-4 border rounded-md shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700">
                                     Tải về file Excel
@@ -309,12 +233,36 @@
                             <div class="overflow-x-auto rounded-lg border border-gray-200">
                                 <table class="min-w-full divide-y-2 divide-gray-200 bg-white text-sm">
                                     <thead class="bg-gray-50">
-                                        <tr>${tableHeadersHtml}</tr>
+                                        <tr>
+                                            <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
+                                            <th class="px-4 py-3 font-semibold text-left">${headers.col2}</th>
+                                            <th class="px-4 py-3 font-semibold text-right">${headers.col3}</th>
+                                            <th class="px-4 py-3 font-semibold text-right">${headers.col4}</th>
+                                            <th class="px-4 py-3 font-semibold text-center">Kết quả</th>
+                                        </tr>
                                     </thead>
-                                    <tbody class="divide-y divide-gray-200">${tableBodyHtml}</tbody>
-                                </table>
-                            </div>`;
-                resultsContainer.innerHTML = fullHtml;
+                                    <tbody class="divide-y divide-gray-200">`;
+                
+                data.forEach(item => {
+                    const isMismatch = !item.is_match;
+                    const rowClass = isMismatch ? 'bg-red-50' : '';
+                    const posVal = typeof item.pos_value === 'number' ? item.pos_value.toLocaleString('vi-VN') : item.pos_value;
+                    const sseVal = typeof item.sse_value === 'number' ? item.sse_value.toLocaleString('vi-VN') : item.sse_value;
+                    const resultCell = isMismatch 
+                        ? `<span class="font-bold text-red-600">❌ LỆCH</span>` 
+                        : `<span class="font-bold text-green-600">✅ Khớp</span>`;
+
+                    html += `<tr class="${rowClass}">
+                                <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
+                                <td class="px-4 py-3 text-gray-700">${item.product_name}</td>
+                                <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
+                                <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
+                                <td class="px-4 py-3 text-center">${resultCell}</td>
+                             </tr>`;
+                });
+
+                html += `</tbody></table></div>`;
+                resultsContainer.innerHTML = html;
                 resultsContainer.classList.remove('hidden');
 
                 document.getElementById('download-excel-btn').addEventListener('click', downloadExcelFile);

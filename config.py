@@ -21,6 +21,8 @@ _app_config = load_app_config()
 STORE_INFO = _app_config.get("STORE_INFO", {})
 TARGET_PRODUCTS_BH03 = _app_config.get("TARGET_PRODUCTS_BH03", [])
 STORE_MAPPING_SSE_TO_POS = _app_config.get("STORE_MAPPING_SSE_TO_POS", {})
+# THÊM DÒNG MỚI: Nạp cấu hình mapping cho đối soát tiền mặt
+STORE_MAPPING_CASH_SSE_TO_POS = _app_config.get("STORE_MAPPING_CASH_SSE_TO_POS", {})
 
 
 # === CẤU HÌNH CỐ ĐỊNH ===
