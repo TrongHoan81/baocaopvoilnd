@@ -1,6 +1,7 @@
 # File xác thực của Google
 client_secret.json
 token.json
+.env
 
 # Thư mục môi trường ảo của Python
 venv/

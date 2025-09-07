@@ -4,6 +4,11 @@ import io
 from datetime import datetime
 import pandas as pd
 
+from dotenv import load_dotenv
+load_dotenv()
+from security import require_internal_api_key
+
+
 # Google
 import gspread
 from googleapiclient.discovery import build
@@ -12,6 +17,17 @@ from googleapiclient.discovery import build
 import config
 import google_handler
 import reconciliation_handler
+
+import os
+import requests
+from flask import stream_with_context
+
+# Đọc biến môi trường (đã có load_dotenv() ở bước trước)
+PROXY_MODE = os.getenv("PROXY_DOWNLOAD_VIA_VPS", "0") == "1"
+VPS_BASE_URL = os.getenv("VPS_BASE_URL", "").rstrip("/")
+VPS_KEY = os.getenv("VPS_INTERNAL_API_KEY", "")
+PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT_SECONDS", "1200"))
+
 
 # Tasks
 from tasks import download_report_generator
@@ -23,17 +39,70 @@ def index():
     """Hiển thị trang giao diện chính."""
     return render_template('index.html')
 
-@app.route('/download_report_stream')
-def download_report_stream():
-    """Endpoint để tải báo cáo và truyền log về giao diện."""
-    report_date_str = request.args.get('report_date')
+@app.get("/internal/download_report_stream")
+@require_internal_api_key()
+def internal_download_report_stream():
+    """Endpoint NỘI BỘ trên VPS: Render sẽ gọi vào đây để nhận SSE."""
+    report_date_str = request.args.get('report_date', '').strip()
     if not report_date_str:
         def error_generator():
             yield 'data: {"status": "error", "message": "Vui lòng chọn ngày báo cáo."}\n\n'
         return Response(error_generator(), mimetype='text/event-stream')
 
     report_date = datetime.strptime(report_date_str, '%Y-%m-%d')
+    # Tái dùng generator hiện có để giữ nguyên log/FINAL_MESSAGE/ERROR
     return Response(download_report_generator(report_date), mimetype='text/event-stream')
+
+@app.route('/download_report_stream')
+def download_report_stream():
+    """Endpoint để tải báo cáo và truyền log về giao diện (Direct hoặc Proxy sang VPS)."""
+    report_date_str = request.args.get('report_date', '').strip()
+    if not report_date_str:
+        def error_generator():
+            yield 'data: {"status": "error", "message": "Vui lòng chọn ngày báo cáo."}\n\n'
+        return Response(error_generator(), mimetype='text/event-stream')
+
+    # === Nhánh PROXY: dùng trên Render ===
+    if PROXY_MODE:
+        if not VPS_BASE_URL or not VPS_KEY:
+            def misconf():
+                yield 'data: {"status": "error", "message": "Proxy bị thiếu cấu hình VPS_BASE_URL hoặc VPS_INTERNAL_API_KEY."}\n\n'
+            return Response(misconf(), mimetype='text/event-stream')
+
+        try:
+            upstream = requests.get(
+                f"{VPS_BASE_URL}/internal/download_report_stream",
+                params={"report_date": report_date_str},
+                headers={"X-Internal-Api-Key": VPS_KEY},
+                stream=True,
+                timeout=PROXY_TIMEOUT,
+            )
+        except requests.RequestException as ex:
+            def err_gen():
+                yield f'data: ERROR:{{"status":"error","message":"Không kết nối được VPS: {str(ex)}"}}\n\n'
+            return Response(err_gen(), mimetype='text/event-stream')
+
+        # Truyền NGUYÊN các dòng SSE từ VPS về trình duyệt
+        def generate():
+            for line in upstream.iter_lines(decode_unicode=True):
+                if line is None:
+                    continue
+                yield line + "\n"
+            yield "\n"  # kết thúc event
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    # === Nhánh DIRECT: local PC / VPS chạy trực tiếp như cũ ===
+    report_date = datetime.strptime(report_date_str, '%Y-%m-%d')
+    return Response(
+        download_report_generator(report_date),
+        mimetype='text/event-stream',
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 @app.route('/reconcile', methods=['POST'])
 def reconcile():

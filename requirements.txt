@@ -9,3 +9,4 @@ google-auth-oauthlib
 lxml
 gunicorn
 pytz
+python-dotenv
