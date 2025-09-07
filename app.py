@@ -1,35 +1,34 @@
 # -*- coding: utf-8 -*-
-from flask import Flask, render_template, request, jsonify, Response, send_file
+from flask import Flask, render_template, request, jsonify, Response, send_file, stream_with_context
 import io
 from datetime import datetime
 import pandas as pd
+import os
+import requests
 
+# Load .env sớm để đọc các biến cấu hình
 from dotenv import load_dotenv
 load_dotenv()
-from security import require_internal_api_key
 
+# Bảo vệ API nội bộ
+from security import require_internal_api_key
 
 # Google
 import gspread
 from googleapiclient.discovery import build
 
-# Modules
+# Modules nghiệp vụ (GIỮ NGUYÊN)
 import config
 import google_handler
 import reconciliation_handler
 
-import os
-import requests
-from flask import stream_with_context
-
-# Đọc biến môi trường (đã có load_dotenv() ở bước trước)
+# Cấu hình PROXY (Render) vs DIRECT (VPS/Local)
 PROXY_MODE = os.getenv("PROXY_DOWNLOAD_VIA_VPS", "0") == "1"
 VPS_BASE_URL = os.getenv("VPS_BASE_URL", "").rstrip("/")
 VPS_KEY = os.getenv("VPS_INTERNAL_API_KEY", "")
-PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT_SECONDS", "1200"))
+PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT_SECONDS", "1200"))  # giây
 
-
-# Tasks
+# Tasks (generator phát SSE – GIỮ NGUYÊN)
 from tasks import download_report_generator
 
 app = Flask(__name__)
@@ -39,10 +38,13 @@ def index():
     """Hiển thị trang giao diện chính."""
     return render_template('index.html')
 
+# ==========================
+# 1) ROUTE NỘI BỘ TRÊN VPS
+# ==========================
 @app.get("/internal/download_report_stream")
 @require_internal_api_key()
 def internal_download_report_stream():
-    """Endpoint NỘI BỘ trên VPS: Render sẽ gọi vào đây để nhận SSE."""
+    """Endpoint NỘI BỘ trên VPS: Render gọi vào đây để nhận SSE."""
     report_date_str = request.args.get('report_date', '').strip()
     if not report_date_str:
         def error_generator():
@@ -50,12 +52,23 @@ def internal_download_report_stream():
         return Response(error_generator(), mimetype='text/event-stream')
 
     report_date = datetime.strptime(report_date_str, '%Y-%m-%d')
-    # Tái dùng generator hiện có để giữ nguyên log/FINAL_MESSAGE/ERROR
-    return Response(download_report_generator(report_date), mimetype='text/event-stream')
+    # Phát NGUYÊN giá trị từ generator của nghiệp vụ
+    return Response(
+        stream_with_context(download_report_generator(report_date)),
+        mimetype='text/event-stream',
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
+# =====================================
+# 2) ROUTE UI – DIRECT hoặc PROXY (ENV)
+# =====================================
 @app.route('/download_report_stream')
 def download_report_stream():
-    """Endpoint để tải báo cáo và truyền log về giao diện (Direct hoặc Proxy sang VPS)."""
+    """
+    Endpoint để tải báo cáo và truyền log về giao diện:
+      - DIRECT (local/VPS): gọi thẳng generator.
+      - PROXY (Render): stream từ VPS kèm HEARTBEAT để tránh timeout.
+    """
     report_date_str = request.args.get('report_date', '').strip()
     if not report_date_str:
         def error_generator():
@@ -66,29 +79,71 @@ def download_report_stream():
     if PROXY_MODE:
         if not VPS_BASE_URL or not VPS_KEY:
             def misconf():
-                yield 'data: {"status": "error", "message": "Proxy bị thiếu cấu hình VPS_BASE_URL hoặc VPS_INTERNAL_API_KEY."}\n\n'
+                yield 'data: {"status": "error", "message": "Proxy thiếu VPS_BASE_URL hoặc VPS_INTERNAL_API_KEY."}\n\n'
             return Response(misconf(), mimetype='text/event-stream')
 
         try:
+            # Đặt timeout dạng (connect, read). Read-timeout đặt ngắn để có thể bơm heartbeat khi im lặng.
             upstream = requests.get(
                 f"{VPS_BASE_URL}/internal/download_report_stream",
                 params={"report_date": report_date_str},
-                headers={"X-Internal-Api-Key": VPS_KEY},
+                headers={
+                    "X-Internal-Api-Key": VPS_KEY,
+                    "Accept": "text/event-stream",
+                },
                 stream=True,
-                timeout=PROXY_TIMEOUT,
+                timeout=(10, 20),  # connect=10s, read=20s -> nếu im quá 20s sẽ raise ReadTimeout
             )
         except requests.RequestException as ex:
             def err_gen():
                 yield f'data: ERROR:{{"status":"error","message":"Không kết nối được VPS: {str(ex)}"}}\n\n'
             return Response(err_gen(), mimetype='text/event-stream')
 
-        # Truyền NGUYÊN các dòng SSE từ VPS về trình duyệt
         def generate():
-            for line in upstream.iter_lines(decode_unicode=True):
-                if line is None:
+            """
+            Proxy SSE với HEARTBEAT:
+            - Đọc từng byte từ upstream; khi ghép đủ dòng thì forward ngay cho trình duyệt.
+            - Nếu im lặng > read-timeout (20s) -> requests ném ReadTimeout -> bơm heartbeat và tiếp tục đọc.
+            """
+            import time
+            from requests.exceptions import ReadTimeout
+
+            # Cho phép truy cập socket thô để đọc từng phần nhỏ
+            upstream.raw.decode_content = True
+            buffer = ""
+            last_any_output = time.monotonic()
+
+            while True:
+                try:
+                    chunk = upstream.raw.read(1)  # đọc 1 byte để phản ứng nhanh
+                    if not chunk:
+                        # Upstream đã đóng kết nối
+                        break
+                    try:
+                        s = chunk.decode('utf-8', errors='ignore')
+                    except Exception:
+                        s = str(chunk)
+                    buffer += s
+
+                    # Đẩy các dòng hoàn chỉnh
+                    if "\n" in buffer:
+                        parts = buffer.split("\n")
+                        buffer = parts.pop()
+                        for line in parts:
+                            # pass-through mỗi dòng
+                            yield (line + "\n")
+                            last_any_output = time.monotonic()
+
+                except ReadTimeout:
+                    # Không nhận dữ liệu mới trong 20s -> gửi heartbeat để giữ kết nối phía Render/Gunicorn
+                    yield "data: 💓 heartbeat\n\n"
+                    last_any_output = time.monotonic()
                     continue
-                yield line + "\n"
-            yield "\n"  # kết thúc event
+
+            # Kết thúc stream
+            if buffer:
+                yield buffer + ("\n" if not buffer.endswith("\n") else "")
+            yield "\n"
 
         return Response(
             stream_with_context(generate()),
@@ -99,11 +154,14 @@ def download_report_stream():
     # === Nhánh DIRECT: local PC / VPS chạy trực tiếp như cũ ===
     report_date = datetime.strptime(report_date_str, '%Y-%m-%d')
     return Response(
-        download_report_generator(report_date),
+        stream_with_context(download_report_generator(report_date)),
         mimetype='text/event-stream',
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
+# ====================
+# 3) CÁC ROUTE KHÁC
+# ====================
 @app.route('/reconcile', methods=['POST'])
 def reconcile():
     """Xử lý yêu cầu đối soát: SanLuong | TienMat | CongNo."""
@@ -134,23 +192,18 @@ def reconcile():
 
         # LẤY DỮ LIỆU POS THEO LOẠI ĐỐI SOÁT
         if reconcile_type == 'CongNo':
-            # Đối soát công nợ -> đọc file CongNo.* và sheet TongHopCongNo
             try:
                 pos_spreadsheet = gspread_client.open(f"CongNo.{date_str_dmy}", folder_id=month_folder_id)
             except gspread.exceptions.SpreadsheetNotFound:
                 return jsonify({"status": "report_not_found", "message": f"Không tìm thấy báo cáo POS (CongNo) ngày {date_str_dmy}."})
-
             pos_sheet = pos_spreadsheet.worksheet('TongHopCongNo')
             pos_data = pos_sheet.get_all_values()
             pos_df = pd.DataFrame(pos_data[1:], columns=pos_data[0]) if len(pos_data) > 1 else pd.DataFrame()
-
         else:
-            # Sản lượng & Tiền mặt dùng BCBH.* và sheet TongHopBCBH (giữ nguyên)
             try:
                 pos_spreadsheet = gspread_client.open(f"BCBH.{date_str_dmy}", folder_id=month_folder_id)
             except gspread.exceptions.SpreadsheetNotFound:
                 return jsonify({"status": "report_not_found", "message": f"Không tìm thấy báo cáo POS (BCBH) ngày {date_str_dmy}."})
-
             pos_sheet = pos_spreadsheet.worksheet('TongHopBCBH')
             pos_data = pos_sheet.get_all_values()
             pos_df = pd.DataFrame(pos_data[1:], columns=pos_data[0]) if len(pos_data) > 1 else pd.DataFrame()
@@ -161,19 +214,16 @@ def reconcile():
             if sse_df is None:
                 return jsonify({"status": "error", "message": "Định dạng file kế toán (sản lượng) không hợp lệ hoặc không thể đọc."}), 400
             reconciliation_results = reconciliation_handler.reconcile_product_data(pos_df, sse_df)
-
         elif reconcile_type == 'TienMat':
             sse_df = reconciliation_handler.read_sse_cash_xml(sse_file.stream, reconcile_date)
             if sse_df is None:
                 return jsonify({"status": "error", "message": "Định dạng file kế toán (tiền mặt) không hợp lệ hoặc không thể đọc."}), 400
             reconciliation_results = reconciliation_handler.reconcile_cash_data(pos_df, sse_df)
-
         elif reconcile_type == 'CongNo':
             sse_df = reconciliation_handler.read_sse_debt_xml(sse_file.stream)
             if sse_df is None:
                 return jsonify({"status": "error", "message": "Định dạng file kế toán (công nợ) không hợp lệ hoặc không thể đọc."}), 400
             reconciliation_results = reconciliation_handler.reconcile_debt_data(pos_df, sse_df)
-
         else:
             return jsonify({"status": "error", "message": "Loại đối soát không hợp lệ."}), 400
 
@@ -250,4 +300,5 @@ def download_excel():
         return "Error creating Excel file", 500
 
 if __name__ == '__main__':
+    # Local dev only
     app.run(host='0.0.0.0', port=8080, debug=False)
