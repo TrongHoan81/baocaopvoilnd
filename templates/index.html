@@ -16,7 +16,7 @@
 
     <div class="w-full max-w-4xl bg-white rounded-lg shadow-xl p-8">
         <div class="flex items-center justify-center space-x-4 mb-6">
-            <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo Công Ty" class="h-20" onerror="this.style.display='none'"> 
+            <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo Công Ty" class="h-20" onerror="this.style.display='none'">
             <div class="text-center">
                 <h2 class="text-xl font-bold text-red-600 leading-tight">CÔNG TY CỔ PHẦN XĂNG DẦU</h2>
                 <h2 class="text-xl font-bold text-red-600 leading-tight">DẦU KHÍ NAM ĐỊNH</h2>
@@ -24,11 +24,7 @@
         </div>
         <h1 class="text-xl font-bold text-center text-blue-600 mb-6">Công cụ Tự động hóa Báo cáo PVOIL</h1>
 
-        <div class="flex justify-center mb-6">
-            <button id="exitButton" class="py-2 px-5 border rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
-                Thoát Ứng Dụng
-            </button>
-        </div>
+        <!-- ĐÃ LOẠI BỎ NÚT THOÁT ỨNG DỤNG -->
 
         <div id="status-message" class="hidden mb-4 p-4 rounded-md text-center"></div>
 
@@ -48,7 +44,7 @@
                         <option value="NXT" disabled>Báo cáo Nhập - Xuất - Tồn (Đang phát triển)</option>
                     </select>
                 </div>
-                 <div>
+                <div>
                     <label for="report-date" class="block text-lg font-medium text-gray-700 mb-2">2. Chọn ngày báo cáo:</label>
                     <input type="date" id="report-date" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2">
                 </div>
@@ -62,7 +58,7 @@
             </div>
 
             <div id="content-doisoat" class="tab-content hidden space-y-6">
-                 <form id="reconcile-form" class="space-y-6">
+                <form id="reconcile-form" class="space-y-6">
                     <div>
                         <label for="reconcile-type" class="block text-lg font-medium text-gray-700 mb-2">1. Chọn loại đối soát:</label>
                         <select id="reconcile-type" name="reconcile_type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md shadow-sm">
@@ -79,18 +75,17 @@
                         <label for="accounting-file" class="block text-lg font-medium text-gray-700 mb-2">3. Tải lên file từ phần mềm kế toán:</label>
                         <input type="file" id="accounting-file" name="accounting_file" required class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
                     </div>
-                     <div>
+                    <div>
                         <button id="reconcile-btn" type="submit" class="w-full flex items-center justify-center py-3 px-4 border rounded-md shadow-sm text-lg font-medium text-white bg-green-600 hover:bg-green-700">
                             <span id="btn-text-reconcile">Thực hiện Đối soát</span>
                             <div id="btn-loader-reconcile" class="loader hidden ml-3"></div>
                         </button>
                     </div>
                 </form>
-                <div id="reconciliation-results" class="hidden">
-                    </div>
+                <div id="reconciliation-results" class="hidden"></div>
             </div>
         </div>
-        
+
         <div class="mt-8 border-t pt-4 text-center">
             <p class="text-xs text-gray-600">Nếu gặp khó khăn, vui lòng liên hệ tác giả để được hỗ trợ.</p>
             <p class="text-xs text-gray-600">Bản quyền thuộc về Nguyễn Trọng Hoàn - 0902069469</p>
@@ -101,20 +96,6 @@
         document.addEventListener('DOMContentLoaded', function() {
             // === Biến toàn cục để lưu kết quả đối soát ===
             let reconciliationResultPayload = {}; // Lưu cả data và type
-
-            // MỚI: Thêm logic cho nút Thoát
-            document.getElementById('exitButton').addEventListener('click', function() {
-                if (confirm('Bạn có chắc chắn muốn tắt ứng dụng không?')) {
-                    fetch('/shutdown', { method: 'POST' })
-                        .then(response => {
-                            document.body.innerHTML = '<div class="flex items-center justify-center min-h-screen"><h1 class="text-2xl font-bold text-gray-700">Đã tắt máy chủ. Bạn có thể đóng tab này.</h1></div>';
-                        })
-                        .catch(error => {
-                            console.error('Lỗi khi tắt máy chủ:', error);
-                            alert('Không thể tắt máy chủ. Vui lòng đóng cửa sổ chương trình theo cách thủ công.');
-                        });
-                }
-            });
 
             // --- Logic chuyển tab ---
             const tabs = document.querySelectorAll('.tab-button');
@@ -133,16 +114,52 @@
             const reportBtnLoader = document.getElementById('btn-loader-report');
             const logContainer = document.getElementById('log-container');
             const logContent = document.getElementById('log-content');
-            let eventSource;
+            const statusMessage = document.getElementById('status-message');
+            let eventSource = null;
 
             downloadBtn.addEventListener('click', () => {
                 const reportType = document.getElementById('report-type').value;
                 const reportDate = document.getElementById('report-date').value;
                 startDownloadProcess(reportType, reportDate);
             });
-            
+
+            function attachSseHandlers(es, params) {
+                es.onmessage = function(event) {
+                    const data = event.data;
+                    if (data.startsWith('FINAL_MESSAGE:')) {
+                        const result = JSON.parse(data.substring('FINAL_MESSAGE:'.length));
+                        showMessage(result);
+                        es.close();
+                        setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
+                    } else if (data.startsWith('ERROR:')) {
+                        const result = JSON.parse(data.substring('ERROR:'.length));
+                        showMessage(result);
+                        es.close();
+                        setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
+                    } else {
+                        logContent.innerHTML += data + '<br>';
+                        logContainer.scrollTop = logContainer.scrollHeight;
+                    }
+                };
+
+                es.onerror = function(err) {
+                    console.warn('Mất kết nối SSE, sẽ tự kết nối lại sau 3 giây...', err);
+                    es.close();
+                    // Thông báo nhẹ nhưng không tắt trạng thái loading để quá trình tiếp tục
+                    statusMessage.className = 'mb-4 p-4 rounded-md text-center bg-yellow-100 text-yellow-800';
+                    statusMessage.textContent = 'Mất kết nối tạm thời, đang thử kết nối lại...';
+                    statusMessage.classList.remove('hidden');
+
+                    setTimeout(() => {
+                        const url = `/download_report_stream?${params.toString()}`;
+                        eventSource = new EventSource(url);
+                        attachSseHandlers(eventSource, params);
+                    }, 3000);
+                };
+            }
+
             function startDownloadProcess(reportType, reportDate) {
-                if (eventSource) eventSource.close();
+                if (eventSource) { try { eventSource.close(); } catch(e) {} }
                 if (!reportDate) {
                     showMessage({ status: 'error', message: 'Vui lòng chọn ngày báo cáo.' });
                     return;
@@ -153,30 +170,9 @@
                 logContent.innerHTML = '';
 
                 const params = new URLSearchParams({ report_type: reportType, report_date: reportDate });
-                eventSource = new EventSource(`/download_report_stream?${params.toString()}`);
-
-                eventSource.onmessage = function(event) {
-                    const data = event.data;
-                    if (data.startsWith('FINAL_MESSAGE:')) {
-                        const result = JSON.parse(data.substring('FINAL_MESSAGE:'.length));
-                        showMessage(result);
-                        eventSource.close();
-                        setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
-                    } else if (data.startsWith('ERROR:')) {
-                        const result = JSON.parse(data.substring('ERROR:'.length));
-                        showMessage(result);
-                        eventSource.close();
-                        setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
-                    } else {
-                        logContent.innerHTML += data + '<br>';
-                        logContainer.scrollTop = logContainer.scrollHeight;
-                    }
-                };
-                eventSource.onerror = function(err) {
-                    showMessage({ status: 'error', message: 'Mất kết nối với máy chủ. Vui lòng thử lại.' });
-                    eventSource.close();
-                    setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
-                };
+                const url = `/download_report_stream?${params.toString()}`;
+                eventSource = new EventSource(url);
+                attachSseHandlers(eventSource, params);
             }
 
             // --- Logic cho Tab 2: Đối soát ---
@@ -196,7 +192,7 @@
                 const formData = new FormData(reconcileForm);
                 const reconcileDate = formData.get('reconcile_date');
                 const accountingFile = formData.get('accounting_file');
-                
+
                 if (!reconcileDate || !accountingFile || accountingFile.size === 0) {
                     showMessage({ status: 'error', message: 'Vui lòng chọn ngày và tải lên file kế toán.' });
                     setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, false, 'Thực hiện Đối soát');
@@ -214,7 +210,7 @@
                             startDownloadProcess('BH03', reconcileDate);
                         }
                     } else if (result.status === 'success') {
-                        reconciliationResultPayload = {data: result.data, reconcile_type: result.reconcile_type};
+                        reconciliationResultPayload = { data: result.data, reconcile_type: result.reconcile_type };
                         renderReconciliationResults(result.data, result.reconcile_type);
                         showMessage({ status: 'success', message: 'Đối soát hoàn tất.' });
                     } else {
@@ -232,7 +228,6 @@
                 let tableHeadersHtml = '';
                 let tableBodyHtml = '';
 
-                // Cập nhật để thêm logic cho CongNo
                 if (type === 'TienMat') {
                     tableHeadersHtml = `
                         <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
@@ -299,7 +294,7 @@
                         </tr>`;
                     });
                 }
-                
+
                 let fullHtml = `<div class="flex justify-between items-center mb-4">
                                 <h3 class="text-xl font-bold text-gray-800">Kết quả Đối soát</h3>
                                 <button id="download-excel-btn" class="py-2 px-4 border rounded-md shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700">
@@ -319,13 +314,13 @@
 
                 document.getElementById('download-excel-btn').addEventListener('click', downloadExcelFile);
             }
-            
+
             async function downloadExcelFile() {
                 if (!reconciliationResultPayload.data || reconciliationResultPayload.data.length === 0) {
                     alert("Không có dữ liệu để tải về.");
                     return;
                 }
-                
+
                 const btn = document.getElementById('download-excel-btn');
                 btn.textContent = 'Đang tạo file...';
                 btn.disabled = true;
@@ -344,7 +339,7 @@
                     const a = document.createElement('a');
                     a.style.display = 'none';
                     a.href = url;
-                    
+
                     const disposition = response.headers.get('Content-Disposition');
                     let filename = 'KetQuaDoiSoat.xlsx';
                     if (disposition && disposition.indexOf('attachment') !== -1) {
@@ -368,7 +363,6 @@
             }
 
             // --- Hàm tiện ích ---
-            const statusMessage = document.getElementById('status-message');
             function setButtonLoading(btn, btnText, btnLoader, isLoading, loadingText) {
                 if (isLoading) {
                     btnText.textContent = loadingText;
