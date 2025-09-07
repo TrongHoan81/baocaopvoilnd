@@ -31,6 +31,87 @@ PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT_SECONDS", "1200"))  # giây
 # Tasks (generator phát SSE – GIỮ NGUYÊN)
 from tasks import download_report_generator
 
+# ========== LỚP 2: JOB MANAGER (VPS) ==========
+# Mục tiêu: nếu client rớt kết nối rồi kết nối lại cùng report_date,
+# sẽ "bắt" tiếp job đang chạy, không khởi động lại từ đầu.
+import threading, queue, time
+from collections import deque
+
+class StreamJob:
+    def __init__(self, report_date):
+        self.report_date = report_date
+        self.thread = None
+        self.subscribers = []            # list[queue.Queue[str]]
+        self.buffer = deque(maxlen=500)  # lưu 500 dòng gần nhất
+        self.lock = threading.Lock()
+        self.done = False
+
+    def start_if_needed(self):
+        with self.lock:
+            if self.thread and self.thread.is_alive():
+                return
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+
+    def _run(self):
+        try:
+            # Gợi ý client retry sau 3s nếu rớt
+            self._broadcast_line("retry: 3000")
+            # Phát luồng log nghiệp vụ
+            for raw_chunk in download_report_generator(self.report_date):
+                # raw_chunk thường đã chứa "data: ..." + "\n\n" hoặc chuỗi nhiều dòng
+                for line in raw_chunk.splitlines():
+                    self._broadcast_line(line)
+
+                # Khi thấy FINAL_MESSAGE hoặc ERROR thì đánh dấu done
+                if "FINAL_MESSAGE:" in raw_chunk or "ERROR:" in raw_chunk:
+                    self.done = True
+        except Exception as e:
+            self._broadcast_line(f'data: ERROR:{{"status":"error","message":"Job crash: {str(e)}"}}')
+        finally:
+            self.done = True
+
+    def _broadcast_line(self, line: str):
+        # lưu buffer
+        self.buffer.append(line)
+        # gửi cho mọi subscriber
+        dead = []
+        for q in self.subscribers:
+            try:
+                q.put_nowait(line)
+            except Exception:
+                dead.append(q)
+        # dọn subscriber lỗi
+        if dead:
+            self.subscribers = [q for q in self.subscribers if q not in dead]
+
+    def subscribe(self):
+        q = queue.Queue(maxsize=1000)
+        with self.lock:
+            # đẩy buffer sẵn có cho subscriber mới
+            for line in self.buffer:
+                try:
+                    q.put_nowait(line)
+                except Exception:
+                    break
+            self.subscribers.append(q)
+        return q
+
+# Registry toàn cục cho các job theo ngày
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+
+def get_or_create_job(report_date):
+    key = report_date.strftime("%Y-%m-%d")
+    with JOBS_LOCK:
+        job = JOBS.get(key)
+        if not job:
+            job = StreamJob(report_date)
+            JOBS[key] = job
+    job.start_if_needed()
+    return job
+
+# ========== APP ==========
 app = Flask(__name__)
 
 @app.route('/')
@@ -44,7 +125,11 @@ def index():
 @app.get("/internal/download_report_stream")
 @require_internal_api_key()
 def internal_download_report_stream():
-    """Endpoint NỘI BỘ trên VPS: Render gọi vào đây để nhận SSE."""
+    """
+    Endpoint NỘI BỘ trên VPS: nhiều client có thể 'bắt' cùng một job đang chạy.
+    - Nếu job đã chạy: gắn vào job hiện tại (không chạy lại).
+    - Nếu chưa có: khởi động job mới cho report_date.
+    """
     report_date_str = request.args.get('report_date', '').strip()
     if not report_date_str:
         def error_generator():
@@ -52,9 +137,30 @@ def internal_download_report_stream():
         return Response(error_generator(), mimetype='text/event-stream')
 
     report_date = datetime.strptime(report_date_str, '%Y-%m-%d')
-    # Phát NGUYÊN giá trị từ generator của nghiệp vụ
+    job = get_or_create_job(report_date)
+    q = job.subscribe()
+
+    def stream():
+        last = time.monotonic()
+        while True:
+            try:
+                line = q.get(timeout=3)  # lấy dòng mới nếu có
+                yield line + "\n"
+                last = time.monotonic()
+            except queue.Empty:
+                # Nếu job đã xong và không còn dòng mới -> kết thúc
+                if job.done:
+                    break
+                # im lặng > 10s -> bơm heartbeat để giữ kết nối dài
+                now = time.monotonic()
+                if now - last > 10:
+                    yield "data: 💓 heartbeat\n\n"
+                    last = now
+        # kết thúc event
+        yield "\n"
+
     return Response(
-        stream_with_context(download_report_generator(report_date)),
+        stream_with_context(stream()),
         mimetype='text/event-stream',
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
@@ -67,7 +173,7 @@ def download_report_stream():
     """
     Endpoint để tải báo cáo và truyền log về giao diện:
       - DIRECT (local/VPS): gọi thẳng generator.
-      - PROXY (Render): stream từ VPS kèm HEARTBEAT để tránh timeout.
+      - PROXY (Render): stream từ VPS kèm HEARTBEAT để tránh timeout/đứt SSE.
     """
     report_date_str = request.args.get('report_date', '').strip()
     if not report_date_str:
@@ -83,16 +189,13 @@ def download_report_stream():
             return Response(misconf(), mimetype='text/event-stream')
 
         try:
-            # Đặt timeout dạng (connect, read). Read-timeout đặt ngắn để có thể bơm heartbeat khi im lặng.
+            # Đặt timeout dạng (connect, read). Read-timeout ngắn để có thể bơm heartbeat khi im lặng.
             upstream = requests.get(
                 f"{VPS_BASE_URL}/internal/download_report_stream",
                 params={"report_date": report_date_str},
-                headers={
-                    "X-Internal-Api-Key": VPS_KEY,
-                    "Accept": "text/event-stream",
-                },
+                headers={"X-Internal-Api-Key": VPS_KEY, "Accept": "text/event-stream"},
                 stream=True,
-                timeout=(10, 20),  # connect=10s, read=20s -> nếu im quá 20s sẽ raise ReadTimeout
+                timeout=(10, 20),  # connect=10s, read=20s -> im >20s sẽ raise ReadTimeout
             )
         except requests.RequestException as ex:
             def err_gen():
@@ -102,42 +205,32 @@ def download_report_stream():
         def generate():
             """
             Proxy SSE với HEARTBEAT:
-            - Đọc từng byte từ upstream; khi ghép đủ dòng thì forward ngay cho trình duyệt.
+            - Đọc từng byte từ upstream; khi đủ dòng thì forward ngay cho trình duyệt.
             - Nếu im lặng > read-timeout (20s) -> requests ném ReadTimeout -> bơm heartbeat và tiếp tục đọc.
             """
-            import time
             from requests.exceptions import ReadTimeout
-
-            # Cho phép truy cập socket thô để đọc từng phần nhỏ
             upstream.raw.decode_content = True
             buffer = ""
-            last_any_output = time.monotonic()
-
             while True:
                 try:
                     chunk = upstream.raw.read(1)  # đọc 1 byte để phản ứng nhanh
                     if not chunk:
-                        # Upstream đã đóng kết nối
-                        break
+                        break  # upstream đóng kết nối
                     try:
                         s = chunk.decode('utf-8', errors='ignore')
                     except Exception:
                         s = str(chunk)
                     buffer += s
 
-                    # Đẩy các dòng hoàn chỉnh
                     if "\n" in buffer:
                         parts = buffer.split("\n")
                         buffer = parts.pop()
                         for line in parts:
-                            # pass-through mỗi dòng
-                            yield (line + "\n")
-                            last_any_output = time.monotonic()
+                            yield line + "\n"
 
                 except ReadTimeout:
                     # Không nhận dữ liệu mới trong 20s -> gửi heartbeat để giữ kết nối phía Render/Gunicorn
                     yield "data: 💓 heartbeat\n\n"
-                    last_any_output = time.monotonic()
                     continue
 
             # Kết thúc stream
