@@ -2,4 +2,4 @@ Chạy cả tháng, delay 10s: python batch_download.py --year 2025 --month 8 --
 Chạy khoảng thời gian chỉ định: python batch_download.py --start 2025-08-05 --end 2025-08-20
 Đóng gói: pyinstaller --onefile --noconsole --name PVOIL_Tool --add-data="static;static" --add-data="templates;templates" run.py
 
-scp "D:\Dropbox\Works 2\IT\GITHUB\PVOIL_KinhDoanh\token.json" root@chatbot.pvoilnamdinh.com.vn:/root/PVOIL_KinhDoanh/token.json
+scp "D:\Dropbox\Works 2\IT\GITHUB\PVOIL_KinhDoanh\Ten_file" root@chatbot.pvoilnamdinh.com.vn:PVOIL_KinhDoanh/

@@ -261,6 +261,11 @@ def process_debt_details(df: pd.DataFrame, store_name: str, dskh_df: pd.DataFram
         if not in_debt_section:
             continue
 
+        # ---- BẮT ĐẦU SỬA ĐỔI ----
+        if col_A.startswith("IV"):
+            break
+        # ---- KẾT THÚC SỬA ĐỔI ----
+
         if _is_digit_or_stt(col_A) and col_B:
             current_customer = col_B
             continue

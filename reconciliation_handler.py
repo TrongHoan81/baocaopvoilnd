@@ -4,6 +4,9 @@ import config
 import xml.etree.ElementTree as ET
 import re
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # HÀM DÙNG CHUNG
@@ -39,8 +42,7 @@ def _canon_store_key(name: str) -> str:
     """Khoá CHXD thống nhất để ghép: bỏ phần trong ngoặc cuối, lower + bỏ dấu + gộp khoảng trắng."""
     if not isinstance(name, str):
         name = ''
-    # bỏ mọi "(...)" ở cuối
-    s = re.sub(r'\s*\(.*?\)\s*$', '', name.strip())
+    s = re.sub(r'\s*\(.*?\)\s*$', '', name.strip())  # bỏ mọi "(...)" ở cuối
     return _norm_key(s)
 
 def _canon_store_display(name: str) -> str:
@@ -78,7 +80,7 @@ def clean_and_convert_to_numeric(series):
     ).fillna(0).round(0)
 
 # ==============================================================================
-# SẢN LƯỢNG (giữ nguyên các hàm cũ)
+# SẢN LƯỢNG
 # ==============================================================================
 
 def find_date_in_headers(header_list):
@@ -146,6 +148,7 @@ def read_sse_product_xml(file_stream):
         return sse_df
     except Exception as e:
         print(f"Lỗi nghiêm trọng khi đọc file XML sản lượng: {e}")
+        logger.exception("Lỗi nghiêm trọng khi đọc file XML sản lượng")
         return None
 
 def reconcile_product_data(pos_df, sse_df):
@@ -185,7 +188,7 @@ def reconcile_product_data(pos_df, sse_df):
     return results
 
 # ==============================================================================
-# TIỀN MẶT (giữ nguyên)
+# TIỀN MẶT
 # ==============================================================================
 
 def read_sse_cash_xml(file_stream, reconcile_date: datetime):
@@ -224,6 +227,7 @@ def read_sse_cash_xml(file_stream, reconcile_date: datetime):
         return sse_df
     except Exception as e:
         print(f"Lỗi nghiêm trọng khi đọc file XML tiền mặt: {e}")
+        logger.exception("Lỗi nghiêm trọng khi đọc file XML tiền mặt")
         return None
 
 def reconcile_cash_data(pos_df, sse_df):
@@ -260,19 +264,16 @@ def reconcile_cash_data(pos_df, sse_df):
     return results
 
 # ==============================================================================
-# CÔNG NỢ (SỬA: đồng nhất tên CHXD; lọc “Loại 2” mạnh; ưu tiên ghép MÃ KH)
+# CÔNG NỢ
 # ==============================================================================
 
 def read_sse_debt_xml(file_stream):
     """
     Đọc file XML 'Sổ đối chiếu công nợ' từ SSE → DataFrame:
-      store_name, sse_ma_khach, sse_ten_khach, sse_phat_sinh_no
-    - Bỏ 4 dòng đầu; dòng 5 tiêu đề; dòng 6 tổng → bỏ; từ dòng 7 xét dữ liệu.
+      store_display, store_key, sse_ma_khach, sse_ten_khach, sse_phat_sinh_no
     - Nhận diện header CHXD: cột A rỗng, cột B = mã ĐV, cột C bắt đầu 'CHXD'.
-    - Dòng chi tiết: cột A là số thứ tự.
-    - Loại bỏ:
-        + Dòng “treo CHXD” (Loại 2): mã KH ≈ mã ĐV (O↔0) **hoặc** tên KH ~= tên CHXD (bỏ hậu tố trong ngoặc; so equals/startswith).
-        + 'Khách hàng chung' / 'Công nợ chung'.
+    - Dòng chi tiết: cột A là STT; lấy 'Mã khách', 'Tên khách', 'Phát sinh nợ'.
+    - Loại bỏ dòng “treo CHXD” (Loại 2) và 'Khách hàng chung'/'Công nợ chung'.
     """
     try:
         xml_bytes = file_stream.read()
@@ -291,17 +292,16 @@ def read_sse_debt_xml(file_stream):
             raise ValueError("XML công nợ không hợp lệ (không thấy tiêu đề).")
 
         header = [str(h) if h is not None else '' for h in all_rows[hidx]]
-        # Chủ đích: tên cột trong file của bạn LUÔN là 'Tên khách'
+        # vị trí cột cần thiết
         idx_stt  = header.index('STT') if 'STT' in header else 0
         idx_code = header.index('Mã khách') if 'Mã khách' in header else header.index('Mã KH')
-        idx_name = header.index('Tên khách')  # bạn xác nhận luôn là 'Tên khách'
-        # Phát sinh nợ có thể là 'Phát sinh nợ' hoặc 'PS nợ'
+        idx_name = header.index('Tên khách')
         idx_psno = header.index('Phát sinh nợ') if 'Phát sinh nợ' in header else header.index('PS nợ')
 
         records = []
         cur_store_code = None
-        cur_store_name_disp = None   # để hiển thị
-        cur_store_key = None         # để ghép
+        cur_store_name_disp = None
+        cur_store_key = None
 
         for row in all_rows[hidx + 2:]:
             row = list(row) if row is not None else []
@@ -326,6 +326,7 @@ def read_sse_debt_xml(file_stream):
             sse_code = (row[idx_code] or '').strip()
             sse_name = (row[idx_name] or '').strip()
             ps_raw   = row[idx_psno]
+
             # Lọc Loại 2: treo vào CHXD
             is_same_code = _codes_equal(sse_code, cur_store_code)
             name_key = _canon_store_key(sse_name)
@@ -345,8 +346,8 @@ def read_sse_debt_xml(file_stream):
                 psv = 0.0 if pd.isna(psv) else float(psv)
 
             records.append({
-                'store_display': cur_store_name_disp,         # giữ để hiển thị
-                'store_key': cur_store_key,                   # để ghép
+                'store_display': cur_store_name_disp,         # hiển thị
+                'store_key': cur_store_key,                   # ghép
                 'sse_ma_khach': sse_code,
                 'sse_ten_khach': sse_name,
                 'sse_phat_sinh_no': round(psv)
@@ -363,25 +364,68 @@ def read_sse_debt_xml(file_stream):
 
     except Exception as e:
         print(f"Lỗi nghiêm trọng khi đọc file XML công nợ: {e}")
+        logger.exception("Lỗi nghiêm trọng khi đọc file XML công nợ")
         return None
+
+def _pos_expand_store_from_tonghop(pos_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Từ sheet 'TongHopCongNo' (cột 'Tên Khách hàng' có thể là CHXD hoặc KH),
+    dựng DataFrame chuẩn có cột 'Cửa hàng' gán theo dòng header CHXD gần nhất.
+    """
+    cols_needed = ['Tên Khách hàng', 'Mã khách hàng', 'Phát sinh nợ']
+    for c in cols_needed:
+        if c not in pos_df.columns:
+            raise KeyError(f"Thiếu cột bắt buộc trong POS: '{c}'")
+    records = []
+    current_store = None
+    for _, row in pos_df.iterrows():
+        ten_kh = str(row['Tên Khách hàng']).strip()
+        if _norm_key(ten_kh).startswith('chxd'):  # header cửa hàng
+            current_store = ten_kh
+            continue
+        if not current_store:
+            # bỏ qua mọi dòng trước khi gặp CHXD đầu tiên
+            continue
+        records.append({
+            'Cửa hàng': current_store,
+            'Tên Khách hàng': ten_kh,
+            'Mã khách hàng': ('' if pd.isna(row['Mã khách hàng']) else str(row['Mã khách hàng']).strip()),
+            'Phát sinh nợ': row['Phát sinh nợ']
+        })
+    df = pd.DataFrame(records) if records else pd.DataFrame(columns=['Cửa hàng','Tên Khách hàng','Mã khách hàng','Phát sinh nợ'])
+    return df
 
 def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
     """
-    Ghép và đối soát công nợ theo CHXD.
-    - Ưu tiên theo MÃ KH; nếu một phía thiếu mã/không hợp lệ → ghép theo TÊN KH.
+    Đối soát công nợ giữa POS (sheet TongHopCongNo) và SSE (XML).
+    - POS: parse theo cấu trúc CHXD header → KH dưới đó; thêm cột 'Cửa hàng'.
+    - Join theo (Cửa hàng, Mã KH); thiếu mã thì fallback (Cửa hàng, Tên KH).
     """
-    # POS: chuẩn hoá
-    pos = pos_df.copy()
-    pos['Cửa hàng'] = pos['Cửa hàng'].astype(str).fillna('').map(_canon_store_display)
+    # ===== Parse POS từ 'TongHopCongNo' để thêm cột 'Cửa hàng' =====
+    try:
+        print(">>> DEBUG[Debt]: Raw POS columns:", list(pos_df.columns))
+        pos = _pos_expand_store_from_tonghop(pos_df)
+    except Exception as e:
+        print(">>> ERROR[Debt]: Không thể dựng POS chuẩn từ TongHopCongNo:", e)
+        logger.exception("Debt: Failed to expand POS TongHopCongNo")
+        raise
+
+    if pos.empty:
+        print(">>> WARNING[Debt]: POS (sau parse) rỗng – có thể sheet TongHopCongNo không đúng cấu trúc.")
+        logger.warning("Debt: POS parsed is empty")
+
+    # Chuẩn hoá POS
+    pos['Cửa hàng'] = pos['Cửa hàng'].astype(str).map(_canon_store_display)
     pos['store_key'] = pos['Cửa hàng'].map(_canon_store_key)
     pos['Mã khách hàng'] = pos['Mã khách hàng'].fillna('').astype(str).str.strip()
     pos['Phát sinh nợ'] = clean_and_convert_to_numeric(pos['Phát sinh nợ'])
-    # loại 'khách hàng chung' nếu còn
+    # Bỏ 'khách hàng chung'
     pos = pos[~pos['Tên Khách hàng'].astype(str).str.strip().str.lower().isin(
         ['khách hàng chung','khach hang chung','công nợ chung','cong no chung']
     )].copy()
 
-    # SSE: chuẩn hoá
+    # ===== Chuẩn hoá SSE =====
+    print(">>> DEBUG[Debt]: SSE columns:", list(sse_df.columns))
     sse = sse_df.copy()
     sse['store_display'] = sse['store_display'].astype(str)
     sse['store_key'] = sse['store_key'].astype(str)
@@ -391,18 +435,21 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
 
     results = []
 
-    # CHXD hợp của 2 nguồn (theo store_key)
+    # ===== Ghép theo từng CHXD (store_key) =====
     all_keys = sorted(set(pos['store_key']).union(set(sse['store_key'])))
+    print(">>> DEBUG[Debt]: Tổng số store_key để so khớp:", len(all_keys))
 
     for skey in all_keys:
         pos_store = pos[pos['store_key'] == skey]
         sse_store = sse[sse['store_key'] == skey]
 
-        # tên hiển thị: ưu tiên POS nếu có, không thì lấy SSE
+        if pos_store.empty and sse_store.empty:
+            continue
+
         display_name = pos_store['Cửa hàng'].iloc[0] if not pos_store.empty else sse_store['store_display'].iloc[0]
 
-        # ===== 1) GHÉP THEO MÃ =====
-        pos_by_code = (pos_store[(pos_store['Mã khách hàng'] != '') & (pos_store['Mã khách hàng'].notna())]
+        # --- 1) Ghép theo MÃ KH ---
+        pos_by_code = (pos_store[pos_store['Mã khách hàng'] != '']
                        .groupby(['Mã khách hàng','Tên Khách hàng'], as_index=False)['Phát sinh nợ'].sum())
         sse_by_code = (sse_store[sse_store['sse_ma_khach'] != '']
                        .groupby(['sse_ma_khach','sse_ten_khach'], as_index=False)['sse_phat_sinh_no'].sum())
@@ -426,7 +473,7 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
             if (not ok) or (pv != 0) or (sv != 0):
                 results.append({
                     'chxd_name': display_name,
-                    'customer_code': c,  # đã chuẩn hoá để nhìn dễ
+                    'customer_code': c,
                     'customer_name': cname,
                     'pos_value': float(round(pv)),
                     'sse_value': float(round(sv)),
@@ -436,7 +483,7 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
             if pn: matched_pos_names.add(_norm_key(pn))
             if sn: matched_sse_names.add(_norm_key(sn))
 
-        # ===== 2) GHÉP THEO TÊN (khi thiếu mã) =====
+        # --- 2) Ghép theo TÊN (khi thiếu mã) ---
         pos_no_code = pos_store[(pos_store['Mã khách hàng'] == '') | (pos_store['Mã khách hàng'].str.lower() == 'không tìm thấy mã khách')] \
                                 .groupby('Tên Khách hàng', as_index=False)['Phát sinh nợ'].sum()
         sse_no_code = sse_store[sse_store['sse_ma_khach'] == ''] \
@@ -447,7 +494,7 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
 
         names = set(pos_name_map.keys()).union(set(sse_name_map.keys()))
         for nk in sorted(names):
-            if nk in matched_pos_names or nk in matched_sse_names:  # tránh match trùng do tên đã xuất hiện ở bước theo mã
+            if nk in matched_pos_names or nk in matched_sse_names:
                 continue
             pn, pv = pos_name_map.get(nk, ('', 0.0))
             sn, sv = sse_name_map.get(nk, ('', 0.0))
