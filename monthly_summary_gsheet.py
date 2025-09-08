@@ -121,7 +121,7 @@ def open_values_with_retry(gclient, file_id: str, sheet_name="TongHopBCBH"):
 # ---- Parse số: bảo toàn dấu thập phân VN ----
 _DEC_TAIL_RE = re.compile(r"[.,]\d{1,6}$")
 def to_number_preserve(s):
-    """
+    r"""
     Chuyển chuỗi -> float, GIỮ phần thập phân theo quy tắc:
       - Nếu có cả '.' và ',', ký tự xuất hiện SAU CÙNG là dấu thập phân.
       - Nếu chỉ có ',', và đuôi ',\d+$'  => ',' là thập phân.
