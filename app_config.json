@@ -35,7 +35,14 @@
     "ND.CHXD18": "CHXD Lộc An",
     "ND.CHXD17": "CHXD Nam Vân",
     "ND.CHXD12": "CHXD Liêm Phong",
-    "ND.CHXD05": "CHXD Cộng Hòa"
+    "ND.CHXD05": "CHXD Cộng Hòa",
+    "ND.CHXDND50": "CHXD Tiên Tân",
+    "ND.CHXDND49": "CHXD Châu Sơn",
+    "ND.CHXDND48": "CHXD Quất Lâm",
+    "ND.CHXDND47": "CHXD Gia Tường",
+    "ND.CHXDND46": "CHXD Đại Hoàng",
+    "ND.CHXDND45": "CHXD Hoa Lư",
+    "ND.CHXDND44": "CHXD Bái Đính"
   },
   "STORE_MAPPING_SSE_TO_POS": {
     "KDNL001": "ND.CHXDND01",
@@ -73,7 +80,14 @@
     "KDNL176": "ND.CHXD43",
     "KHO4": "NĐ.CHXDND33",
     "KDNL005": "ND.CHXD05",
-    "KDNL175": "ND.CHXDND42"
+    "KDNL175": "ND.CHXDND42",
+    "KDNL183": "ND.CHXDND50",
+    "KDNL182": "ND.CHXDND49",
+    "KDNL081": "ND.CHXDND48",
+    "KDNL080": "ND.CHXDND47",
+    "KDNL178": "ND.CHXDND46",
+    "KDNL179": "ND.CHXDND45",
+    "KDNL177": "ND.CHXDND44"
   },
   "STORE_MAPPING_CASH_SSE_TO_POS": {
     "KDNL001": "ND.CHXDND01",
@@ -111,7 +125,15 @@
     "KDNL074": "ND.CHXDND41",
     "KDNL075": "ND.CHXDND42",
     "KDNL076": "ND.CHXD43",
-    "TN0000": "NĐ.CHXDND33"
+    "TN0000": "NĐ.CHXDND33",
+    "KDNL075": "ND.CHXDND42",
+    "KDNL083": "ND.CHXDND50",
+    "KDNL082": "ND.CHXDND49",
+    "KDNL081": "ND.CHXDND48",
+    "KDNL080": "ND.CHXDND47",
+    "KDNL078": "ND.CHXDND46",
+    "KDNL079": "ND.CHXDND45",
+    "KDNL077": "ND.CHXDND44"
   },
   "TARGET_PRODUCTS_BH03": [
     "Xăng E5 RON92 Mức 2",

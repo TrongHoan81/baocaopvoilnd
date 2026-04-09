@@ -9,6 +9,7 @@ NO_CODE_PLACEHOLDER = "Không tìm thấy mã khách"
 SKIP_NAMES = {"cong no chung"}
 # Ưu tiên cột J (index 9), fallback cột thứ 17 (index 16) cho các chỗ KHÁC doanh thu/tiền mặt
 AMOUNT_INDEXES = (9, 16)
+TOLERANCE = 1e-3  # so sánh chênh lệch giữa children_sum và header_total
 
 # ---------- Helpers ----------
 def _vn_normalize(s: str) -> str:
@@ -19,11 +20,13 @@ def _vn_normalize(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s
 
+
 def _norm_label(s: str) -> str:
     # Chuẩn hoá nhãn để so sánh: lower + bỏ ':' '.' + rút gọn khoảng trắng
     s = _vn_normalize(s)
     s = s.replace(":", "").replace(".", "")
     return s
+
 
 def _is_digit_or_stt(s: str) -> bool:
     if not isinstance(s, str):
@@ -32,6 +35,17 @@ def _is_digit_or_stt(s: str) -> bool:
     if not s:
         return False
     return bool(re.match(r"^(?:\d+\.?|stt)$", s.lower()))
+
+
+# NEW: nhận diện dòng "tổng từng mặt hàng" theo số thứ tự dạng 1.1, 1.2, 1.3 ... ở cột A
+_def_group_re = re.compile(r"^\d+(?:\.\d+)+$")
+
+def _is_group_total(a_val: str) -> bool:
+    if a_val is None:
+        return False
+    a = str(a_val).strip()
+    return bool(_def_group_re.match(a))
+
 
 def _to_float(x) -> float:
     """
@@ -101,6 +115,7 @@ def _to_float(x) -> float:
         except Exception:
             return 0.0
 
+
 def _get_amount_from_row(row: pd.Series) -> float:
     """
     Hàm chung cho các nơi KHÁC doanh thu/tiền mặt:
@@ -124,6 +139,7 @@ def _get_amount_from_row(row: pd.Series) -> float:
             return v
     return 0.0
 
+
 def _get_amount_col_j(row: pd.Series) -> float:
     """
     CHUYÊN DỤNG cho 'Doanh thu' và 'Tiền mặt' của BH03:
@@ -133,17 +149,18 @@ def _get_amount_col_j(row: pd.Series) -> float:
         return _to_float(row.iloc[9])
     return 0.0
 
+
 # ---------- BCBH (Mục IV + Doanh thu/Tiền mặt) ----------
 def process_and_validate_bh03(df: pd.DataFrame, store_name: str) -> Optional[dict]:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return None
 
     target_products: List[str] = config.TARGET_PRODUCTS_BH03
-    summary_data = {p: 0.0 for p in target_products}
+    summary_data: Dict[str, float] = {p: 0.0 for p in target_products}
     revenue = 0.0
     cash_payment = 0.0
 
-    # MỤC IV: cộng SL ở cột 5 (index 4)
+    # --- Tìm phạm vi MỤC IV ---
     start_index = -1
     for i, row in df.iterrows():
         a_val = str(row.iloc[0]).strip() if len(row) > 0 and pd.notna(row.iloc[0]) else ''
@@ -158,16 +175,44 @@ def process_and_validate_bh03(df: pd.DataFrame, store_name: str) -> Optional[dic
                 end_index = i
                 break
         section_df = df.iloc[start_index:end_index]
-        for _, row in section_df.iterrows():
-            product_name = row.iloc[1] if len(row) > 1 else None
-            if isinstance(product_name, str):
-                cleaned = product_name.strip()
-                if cleaned in summary_data:
-                    # lấy sản lượng từ cột E (index 4)
-                    qty = _to_float(row.iloc[4] if len(row) > 4 else 0)
-                    summary_data[cleaned] += qty
 
-    # Doanh thu & Tiền mặt
+        # --- Tính sản lượng theo từng mặt hàng ---
+        for product in target_products:
+            children_sum = 0.0
+            header_total = 0.0
+            for _, row in section_df.iterrows():
+                b_val = row.iloc[1] if len(row) > 1 else None
+                if not isinstance(b_val, str):
+                    continue
+                if b_val.strip() != product:
+                    continue
+                a_val = row.iloc[0] if len(row) > 0 else ""
+                qty = _to_float(row.iloc[4] if len(row) > 4 else 0)
+                if _is_group_total(a_val):
+                    header_total += qty
+                else:
+                    children_sum += qty
+
+            # Quy tắc chọn giá trị
+            if children_sum > 0 and header_total > 0 and abs(children_sum - header_total) <= TOLERANCE:
+                summary_data[product] = round(children_sum, 3)
+            elif children_sum > 0:
+                summary_data[product] = round(children_sum, 3)
+            elif header_total > 0:
+                summary_data[product] = round(header_total, 3)
+            else:
+                summary_data[product] = 0.0
+
+        # --- Tổng sản lượng (cột H): ưu tiên dòng B == 'Tổng cộng' trong MỤC IV ---
+        overall_total = 0.0
+        for _, row in section_df.iterrows():
+            b_val = row.iloc[1] if len(row) > 1 else None
+            if isinstance(b_val, str) and _norm_label(b_val) == _norm_label("Tổng cộng"):
+                overall_total += _to_float(row.iloc[4] if len(row) > 4 else 0)
+        if overall_total <= 0:
+            overall_total = sum(summary_data.values())
+
+    # --- Doanh thu & Tiền mặt (GIỮ NGUYÊN) ---
     label_tong_cong = _norm_label("Tổng cộng")
     label_xuat_ban_le = _norm_label("Xuất bán lẻ")
 
@@ -191,14 +236,18 @@ def process_and_validate_bh03(df: pd.DataFrame, store_name: str) -> Optional[dic
             continue
 
     total_quantity = float(sum(summary_data.values()))
-    if total_quantity > 0 or revenue > 0 or cash_payment > 0:
+    # nếu đã lấy được overall_total theo MỤC IV thì dùng; nếu chưa có (không tìm thấy Mục IV) thì tổng theo mặt hàng
+    tong_san_luong = round(overall_total if 'overall_total' in locals() else total_quantity, 3)
+
+    if tong_san_luong > 0 or revenue > 0 or cash_payment > 0:
         final_row = {"Tên CHXD": store_name}
         final_row.update(summary_data)
-        final_row["Tổng sản lượng"] = round(total_quantity, 3)
+        final_row["Tổng sản lượng"] = tong_san_luong
         final_row["Doanh thu"] = revenue
         final_row["Tiền mặt"] = cash_payment
         return final_row
     return None
+
 
 # ---------- DSKH helpers ----------
 def _build_customer_index(dskh_df: pd.DataFrame) -> Tuple[Dict[str,str], Dict[str,str]]:
@@ -222,6 +271,7 @@ def _build_customer_index(dskh_df: pd.DataFrame) -> Tuple[Dict[str,str], Dict[st
             alias_map[alias] = code
     return exact_map, alias_map
 
+
 def _resolve_customer_code(customer_name: str, exact_map: Dict[str,str], alias_map: Dict[str,str]) -> str:
     name_norm = _vn_normalize(customer_name or "")
     if not name_norm or name_norm in SKIP_NAMES:
@@ -238,6 +288,7 @@ def _resolve_customer_code(customer_name: str, exact_map: Dict[str,str], alias_m
         if base in alias_map:
             return alias_map[base]
     return NO_CODE_PLACEHOLDER
+
 
 # ---------- Chi tiết công nợ (MỤC II/III) ----------
 def process_debt_details(df: pd.DataFrame, store_name: str, dskh_df: pd.DataFrame) -> List[dict]:
@@ -261,10 +312,9 @@ def process_debt_details(df: pd.DataFrame, store_name: str, dskh_df: pd.DataFram
         if not in_debt_section:
             continue
 
-        # ---- BẮT ĐẦU SỬA ĐỔI ----
+        # Dừng khi sang MỤC IV (GIỮ NGUYÊN Ý NGHĨA)
         if col_A.startswith("IV"):
             break
-        # ---- KẾT THÚC SỬA ĐỔI ----
 
         if _is_digit_or_stt(col_A) and col_B:
             current_customer = col_B
@@ -272,7 +322,7 @@ def process_debt_details(df: pd.DataFrame, store_name: str, dskh_df: pd.DataFram
 
         if current_customer and not _is_digit_or_stt(col_A):
             product = col_B
-            # Giữ nguyên logic cũ cho phần công nợ (không yêu cầu đổi)
+            # Giữ nguyên logic cũ cho phần công nợ
             quantity = _to_float(row.iloc[6] if len(row) > 6 else 0)
             unit_price = _to_float(row.iloc[7] if len(row) > 7 else 0)
             debt = _get_amount_from_row(row)

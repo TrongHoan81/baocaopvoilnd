@@ -24,29 +24,46 @@
         </div>
         <h1 class="text-xl font-bold text-center text-blue-600 mb-6">Công cụ Tự động hóa Báo cáo PVOIL</h1>
 
-        <!-- ĐÃ LOẠI BỎ NÚT THOÁT ỨNG DỤNG -->
-
         <div id="status-message" class="hidden mb-4 p-4 rounded-md text-center"></div>
 
         <div class="border-b border-gray-200 mb-6">
             <nav class="-mb-px flex space-x-4" aria-label="Tabs">
                 <button id="tab-baocao" class="tab-button active whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm">Báo cáo</button>
+                <button id="tab-tonghop" class="tab-button whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm">Tổng hợp</button>
                 <button id="tab-doisoat" class="tab-button whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm">Đối soát</button>
             </nav>
         </div>
 
         <div>
+            <!-- TAB 1: BÁO CÁO -->
             <div id="content-baocao" class="tab-content space-y-6">
                 <div>
                     <label for="report-type" class="block text-lg font-medium text-gray-700 mb-2">1. Chọn loại báo cáo:</label>
                     <select id="report-type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md shadow-sm">
                         <option value="BH03">Báo cáo Bán hàng (BH03)</option>
+                        <option value="HD01">Báo cáo Hóa đơn (HD01)</option>
                         <option value="NXT" disabled>Báo cáo Nhập - Xuất - Tồn (Đang phát triển)</option>
                     </select>
                 </div>
-                <div>
-                    <label for="report-date" class="block text-lg font-medium text-gray-700 mb-2">2. Chọn ngày báo cáo:</label>
-                    <input type="date" id="report-date" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2">
+                <div id="station-container">
+                    <label for="station-code" class="block text-lg font-medium text-gray-700 mb-2">2. Chọn Cửa hàng:</label>
+                    <select id="station-code" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md shadow-sm">
+                        <option value="ALL">Tất cả cửa hàng</option>
+                        {% for code, name in stores.items() %}
+                        <option value="{{ code }}">{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div id="date-container">
+                    <label for="report-date" class="block text-lg font-medium text-gray-700 mb-2">3. Chọn ngày báo cáo:</label>
+                    <input type="date" id="report-date" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2">
+                </div>
+                <div id="month-container" class="hidden">
+                    <label class="block text-lg font-medium text-gray-700 mb-2">3. Chọn Tháng / Năm báo cáo:</label>
+                    <div class="flex space-x-4">
+                        <select id="report-month" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2"></select>
+                        <select id="report-year" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2"></select>
+                    </div>
                 </div>
                 <div>
                     <button id="download-report-btn" type="button" class="w-full flex items-center justify-center py-3 px-4 border rounded-md shadow-sm text-lg font-medium text-white bg-blue-600 hover:bg-blue-700">
@@ -57,6 +74,27 @@
                 <div id="log-container" class="hidden bg-gray-900 text-white text-sm rounded-md p-4 overflow-y-auto border-4 border-gray-700"><div id="log-content"></div></div>
             </div>
 
+            <!-- TAB 2: TỔNG HỢP -->
+            <div id="content-tonghop" class="tab-content hidden space-y-6">
+                <div>
+                    <label class="block text-lg font-medium text-gray-700 mb-2">Chọn Tháng / Năm cần tổng hợp (Bảng kê Hóa đơn):</label>
+                    <div class="flex space-x-4">
+                        <select id="aggregate-month" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2"></select>
+                        <select id="aggregate-year" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2"></select>
+                    </div>
+                </div>
+                <div class="bg-blue-50 border-l-4 border-blue-400 p-4">
+                    <p class="text-sm text-blue-700">Tính năng này sẽ gộp toàn bộ các tab cửa hàng trong tháng và tạo ra một Bảng Thống Kê Hóa Đơn Bán Hàng dạng Excel đa tầng chuẩn mực.</p>
+                </div>
+                <div>
+                    <button id="aggregate-btn" type="button" class="w-full flex items-center justify-center py-3 px-4 border rounded-md shadow-sm text-lg font-medium text-white bg-purple-600 hover:bg-purple-700">
+                        <span id="btn-text-aggregate">Kiểm tra & Tải Excel Tổng hợp</span>
+                        <div id="btn-loader-aggregate" class="loader hidden ml-3"></div>
+                    </button>
+                </div>
+            </div>
+
+            <!-- TAB 3: ĐỐI SOÁT -->
             <div id="content-doisoat" class="tab-content hidden space-y-6">
                 <form id="reconcile-form" class="space-y-6">
                     <div>
@@ -65,14 +103,25 @@
                             <option value="SanLuong">Đối soát Sản lượng Bán hàng</option>
                             <option value="TienMat">Đối soát Tiền mặt</option>
                             <option value="CongNo">Đối soát Công nợ</option>
+                            <option value="HoaDon">Đối soát Hóa đơn Bán hàng (HD01)</option>
                         </select>
                     </div>
-                    <div>
+                    
+                    <div id="reconcile-date-container">
                         <label for="reconcile-date" class="block text-lg font-medium text-gray-700 mb-2">2. Chọn ngày đối soát:</label>
-                        <input type="date" id="reconcile-date" name="reconcile_date" required class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2">
+                        <input type="date" id="reconcile-date" name="reconcile_date" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2">
                     </div>
+
+                    <div id="reconcile-month-container" class="hidden">
+                        <label class="block text-lg font-medium text-gray-700 mb-2">2. Chọn Tháng / Năm đối soát:</label>
+                        <div class="flex space-x-4">
+                            <select id="reconcile-month" name="reconcile_month" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2"></select>
+                            <select id="reconcile-year" name="reconcile_year" class="mt-1 block w-full rounded-md shadow-sm border-gray-300 p-2"></select>
+                        </div>
+                    </div>
+
                     <div>
-                        <label for="accounting-file" class="block text-lg font-medium text-gray-700 mb-2">3. Tải lên file từ phần mềm kế toán:</label>
+                        <label for="accounting-file" class="block text-lg font-medium text-gray-700 mb-2">3. Tải lên Bảng kê Thuế (Excel/XML):</label>
                         <input type="file" id="accounting-file" name="accounting_file" required class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
                     </div>
                     <div>
@@ -94,10 +143,23 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // === Biến toàn cục để lưu kết quả đối soát ===
-            let reconciliationResultPayload = {}; // Lưu cả data và type
+            let reconciliationResultPayload = {};
+            let eventSource = null;
 
-            // --- Logic chuyển tab ---
+            // --- KHỞI TẠO DỮ LIỆU ---
+            const currentYear = new Date().getFullYear();
+            const currentMonth = new Date().getMonth() + 1;
+            const monthOptions = Array.from({length: 12}, (_, i) => `<option value="${i+1}" ${i+1 === currentMonth ? 'selected' : ''}>Tháng ${i+1}</option>`).join('');
+            const yearOptions = Array.from({length: 5}, (_, i) => `<option value="${currentYear - 2 + i}" ${currentYear - 2 + i === currentYear ? 'selected' : ''}>Năm ${currentYear - 2 + i}</option>`).join('');
+            
+            document.getElementById('report-month').innerHTML = monthOptions;
+            document.getElementById('report-year').innerHTML = yearOptions;
+            document.getElementById('aggregate-month').innerHTML = monthOptions;
+            document.getElementById('aggregate-year').innerHTML = yearOptions;
+            document.getElementById('reconcile-month').innerHTML = monthOptions;
+            document.getElementById('reconcile-year').innerHTML = yearOptions;
+
+            // --- LOGIC CHUYỂN TAB ---
             const tabs = document.querySelectorAll('.tab-button');
             tabs.forEach(tab => {
                 tab.addEventListener('click', () => {
@@ -105,77 +167,140 @@
                     tab.classList.add('active');
                     document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
                     document.getElementById('content-' + tab.id.split('-')[1]).classList.remove('hidden');
+                    hideMessage();
                 });
             });
 
-            // --- Logic cho Tab 1: Tải báo cáo ---
+            // --- LOGIC GIAO DIỆN CHỌN BÁO CÁO ---
+            const reportTypeSelect = document.getElementById('report-type');
+            const dateContainer = document.getElementById('date-container');
+            const monthContainer = document.getElementById('month-container');
+
+            reportTypeSelect.addEventListener('change', (e) => {
+                if(e.target.value === 'HD01') {
+                    dateContainer.classList.add('hidden');
+                    monthContainer.classList.remove('hidden');
+                } else {
+                    dateContainer.classList.remove('hidden');
+                    monthContainer.classList.add('hidden');
+                }
+            });
+
+            const reconcileTypeSelect = document.getElementById('reconcile-type');
+            const reconcileDateContainer = document.getElementById('reconcile-date-container');
+            const reconcileMonthContainer = document.getElementById('reconcile-month-container');
+            const reconcileDateInput = document.getElementById('reconcile-date');
+
+            reconcileTypeSelect.addEventListener('change', (e) => {
+                if(e.target.value === 'HoaDon') {
+                    reconcileDateContainer.classList.add('hidden');
+                    reconcileMonthContainer.classList.remove('hidden');
+                    reconcileDateInput.removeAttribute('required');
+                } else {
+                    reconcileDateContainer.classList.remove('hidden');
+                    reconcileMonthContainer.classList.add('hidden');
+                    reconcileDateInput.setAttribute('required', 'required');
+                }
+            });
+
+            // --- BÁO CÁO & TỔNG HỢP (Giữ nguyên logic cũ) ---
             const downloadBtn = document.getElementById('download-report-btn');
             const reportBtnText = document.getElementById('btn-text-report');
             const reportBtnLoader = document.getElementById('btn-loader-report');
             const logContainer = document.getElementById('log-container');
             const logContent = document.getElementById('log-content');
-            const statusMessage = document.getElementById('status-message');
-            let eventSource = null;
 
-            downloadBtn.addEventListener('click', () => {
+            downloadBtn.addEventListener('click', async () => {
                 const reportType = document.getElementById('report-type').value;
                 const reportDate = document.getElementById('report-date').value;
-                startDownloadProcess(reportType, reportDate);
+                const stationCode = document.getElementById('station-code').value;
+                const reportYear = document.getElementById('report-year').value;
+                const reportMonth = document.getElementById('report-month').value;
+
+                if (reportType === 'BH03' && !reportDate) { showMessage({ status: 'error', message: 'Vui lòng chọn ngày báo cáo.' }); return; }
+
+                try {
+                    setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, true, 'Đang kiểm tra...');
+                    hideMessage();
+                    
+                    const params = new URLSearchParams({ report_type: reportType, report_date: reportDate, station_code: stationCode, report_year: reportYear, report_month: reportMonth });
+                    const checkRes = await fetch(`/check_report_exists?${params.toString()}`);
+                    const checkData = await checkRes.json();
+                    
+                    if (checkData.exists) {
+                        if (!confirm(`${checkData.message}\nBạn có muốn tải lại và ghi đè không?`)) {
+                            setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
+                            return;
+                        }
+                    }
+                    startDownloadProcess(reportType, reportDate, stationCode, reportYear, reportMonth);
+                } catch (err) {
+                    startDownloadProcess(reportType, reportDate, stationCode, reportYear, reportMonth);
+                }
             });
 
-            function attachSseHandlers(es, params) {
-                es.onmessage = function(event) {
+            function startDownloadProcess(reportType, reportDate, stationCode, reportYear, reportMonth) {
+                if (eventSource) { try { eventSource.close(); } catch(e) {} }
+                setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, true, 'Đang xử lý...');
+                logContainer.classList.remove('hidden');
+                logContent.innerHTML = '';
+                const params = new URLSearchParams({ report_type: reportType, report_date: reportDate, station_code: stationCode, report_year: reportYear, report_month: reportMonth });
+                eventSource = new EventSource(`/download_report_stream?${params.toString()}`);
+                
+                eventSource.onmessage = function(event) {
                     const data = event.data;
                     if (data.startsWith('FINAL_MESSAGE:')) {
-                        const result = JSON.parse(data.substring('FINAL_MESSAGE:'.length));
-                        showMessage(result);
-                        es.close();
+                        showMessage(JSON.parse(data.substring('FINAL_MESSAGE:'.length)));
+                        eventSource.close();
                         setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
                     } else if (data.startsWith('ERROR:')) {
-                        const result = JSON.parse(data.substring('ERROR:'.length));
-                        showMessage(result);
-                        es.close();
+                        showMessage(JSON.parse(data.substring('ERROR:'.length)));
+                        eventSource.close();
                         setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, false, 'Tải báo cáo lên Google Drive');
                     } else {
                         logContent.innerHTML += data + '<br>';
                         logContainer.scrollTop = logContainer.scrollHeight;
                     }
                 };
-
-                es.onerror = function(err) {
-                    console.warn('Mất kết nối SSE, sẽ tự kết nối lại sau 3 giây...', err);
-                    es.close();
-                    // Thông báo nhẹ nhưng không tắt trạng thái loading để quá trình tiếp tục
-                    statusMessage.className = 'mb-4 p-4 rounded-md text-center bg-yellow-100 text-yellow-800';
-                    statusMessage.textContent = 'Mất kết nối tạm thời, đang thử kết nối lại...';
-                    statusMessage.classList.remove('hidden');
-
-                    setTimeout(() => {
-                        const url = `/download_report_stream?${params.toString()}`;
-                        eventSource = new EventSource(url);
-                        attachSseHandlers(eventSource, params);
-                    }, 3000);
-                };
             }
 
-            function startDownloadProcess(reportType, reportDate) {
-                if (eventSource) { try { eventSource.close(); } catch(e) {} }
-                if (!reportDate) {
-                    showMessage({ status: 'error', message: 'Vui lòng chọn ngày báo cáo.' });
-                    return;
-                }
-                setButtonLoading(downloadBtn, reportBtnText, reportBtnLoader, true, 'Đang xử lý...');
+            const aggregateBtn = document.getElementById('aggregate-btn');
+            const aggregateBtnText = document.getElementById('btn-text-aggregate');
+            const aggregateBtnLoader = document.getElementById('btn-loader-aggregate');
+
+            aggregateBtn.addEventListener('click', async () => {
+                const month = document.getElementById('aggregate-month').value;
+                const year = document.getElementById('aggregate-year').value;
+                setButtonLoading(aggregateBtn, aggregateBtnText, aggregateBtnLoader, true, 'Đang kiểm tra...');
                 hideMessage();
-                logContainer.classList.remove('hidden');
-                logContent.innerHTML = '';
 
-                const params = new URLSearchParams({ report_type: reportType, report_date: reportDate });
-                const url = `/download_report_stream?${params.toString()}`;
-                eventSource = new EventSource(url);
-                attachSseHandlers(eventSource, params);
-            }
+                try {
+                    const params = new URLSearchParams({ report_type: 'HD01', station_code: 'ALL', report_year: year, report_month: month });
+                    const checkRes = await fetch(`/check_report_exists?${params.toString()}`);
+                    const checkData = await checkRes.json();
 
-            // --- Logic cho Tab 2: Đối soát ---
+                    if (!checkData.exists) {
+                        setButtonLoading(aggregateBtn, aggregateBtnText, aggregateBtnLoader, false, 'Kiểm tra & Tải Excel Tổng hợp');
+                        if (confirm(`Không tìm thấy dữ liệu báo cáo BKHĐ tháng ${month}/${year}.\nBạn có muốn tự động chuyển sang tải báo cáo không?`)) {
+                            document.getElementById('tab-baocao').click();
+                            document.getElementById('report-type').value = 'HD01';
+                            document.getElementById('report-type').dispatchEvent(new Event('change'));
+                            document.getElementById('report-month').value = month;
+                            document.getElementById('report-year').value = year;
+                            document.getElementById('download-report-btn').click();
+                        }
+                    } else {
+                        aggregateBtnText.textContent = 'Đang xử lý Excel...';
+                        window.location.href = `/aggregate_hd01?month=${month}&year=${year}`;
+                        setTimeout(() => setButtonLoading(aggregateBtn, aggregateBtnText, aggregateBtnLoader, false, 'Kiểm tra & Tải Excel Tổng hợp'), 5000);
+                    }
+                } catch (err) {
+                    showMessage({ status: 'error', message: 'Không thể kết nối máy chủ.' });
+                    setButtonLoading(aggregateBtn, aggregateBtnText, aggregateBtnLoader, false, 'Kiểm tra & Tải Excel Tổng hợp');
+                }
+            });
+
+            // --- TÍNH NĂNG ĐỐI SOÁT (Đã fix lỗi sập Browser khi data quá lớn) ---
             const reconcileForm = document.getElementById('reconcile-form');
             const reconcileBtn = document.getElementById('reconcile-btn');
             const reconcileBtnText = document.getElementById('btn-text-reconcile');
@@ -184,119 +309,116 @@
 
             reconcileForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
-                setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, true, 'Đang đối soát...');
+                setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, true, 'Đang tiến hành Đối soát (Có thể mất vài phút)...');
                 hideMessage();
                 resultsContainer.classList.add('hidden');
-                reconciliationResultPayload = {}; // Reset dữ liệu cũ
+                reconciliationResultPayload = {};
 
                 const formData = new FormData(reconcileForm);
-                const reconcileDate = formData.get('reconcile_date');
-                const accountingFile = formData.get('accounting_file');
-
-                if (!reconcileDate || !accountingFile || accountingFile.size === 0) {
-                    showMessage({ status: 'error', message: 'Vui lòng chọn ngày và tải lên file kế toán.' });
-                    setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, false, 'Thực hiện Đối soát');
-                    return;
-                }
+                const rType = formData.get('reconcile_type');
 
                 try {
                     const response = await fetch('/reconcile', { method: 'POST', body: formData });
-                    const result = await response.json();
+                    
+                    // SỬA LỖI TẠI ĐÂY: Bắt JS đọc dữ liệu JSON trước, không hoảng loạn khi gặp lỗi 400
+                    const result = await response.json(); 
+                    
+                    if (!response.ok) {
+                        // Nếu Python có gửi kèm lời nhắn chi tiết, hãy lấy lời nhắn đó. Nếu không mới báo lỗi 400 chung chung.
+                        throw new Error(result.message || `Máy chủ trả về mã lỗi: ${response.status}`);
+                    }
 
                     if (result.status === 'report_not_found') {
-                        if (confirm(result.message + "\nBạn có muốn tải báo cáo POS cho ngày này ngay bây giờ không?")) {
+                        if (confirm(result.message + "\nBạn có muốn chuyển sang tải báo cáo POS ngay bây giờ không?")) {
                             document.getElementById('tab-baocao').click();
-                            document.getElementById('report-date').value = reconcileDate;
-                            startDownloadProcess('BH03', reconcileDate);
+                            document.getElementById('report-date').value = formData.get('reconcile_date');
                         }
                     } else if (result.status === 'success') {
+                        // Lưu toàn bộ data để chuẩn bị cho nút Tải Excel
                         reconciliationResultPayload = { data: result.data, reconcile_type: result.reconcile_type };
+                        
+                        // Render bảng kết quả (Có giới hạn chống tràn RAM)
                         renderReconciliationResults(result.data, result.reconcile_type);
-                        showMessage({ status: 'success', message: 'Đối soát hoàn tất.' });
+                        showMessage({ status: 'success', message: 'Đối soát hoàn tất!' });
                     } else {
                         showMessage(result);
                     }
                 } catch (error) {
-                    console.error("Lỗi khi đối soát:", error);
-                    showMessage({ status: 'error', message: 'Lỗi kết nối hoặc lỗi server khi đối soát. Vui lòng kiểm tra console (F12) để biết thêm chi tiết.' });
+                    console.error("Chi tiết lỗi JS hoặc Mạng:", error);
+                    // Thông báo lỗi thật để dễ traceback thay vì 'Lỗi server' chung chung
+                    showMessage({ status: 'error', message: `Lỗi kết nối hoặc xử lý giao diện: ${error.message}` });
                 } finally {
                     setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, false, 'Thực hiện Đối soát');
                 }
             });
 
+            // Logic Render bảng kết quả (ÁP DỤNG LAZY RENDER)
             function renderReconciliationResults(data, type) {
                 let tableHeadersHtml = '';
                 let tableBodyHtml = '';
 
-                if (type === 'TienMat') {
+                // BẢO VỆ DOM: Giới hạn chỉ vẽ tối đa 1.000 dòng để trình duyệt không bị sập.
+                const MAX_RENDER_ROWS = 1000;
+                const displayData = data.slice(0, MAX_RENDER_ROWS);
+
+                if (type === 'HoaDon') {
                     tableHeadersHtml = `
-                        <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
-                        <th class="px-4 py-3 font-semibold text-left">Đối tượng</th>
-                        <th class="px-4 py-3 font-semibold text-right">Tiền mặt POS (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-right">Tiền mặt Kế toán (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    data.forEach(item => {
+                        <th class="px-4 py-3 font-semibold text-left">CHXD</th>
+                        <th class="px-4 py-3 font-semibold text-left">Số Hóa Đơn</th>
+                        <th class="px-4 py-3 font-semibold text-right">Thành tiền PVOIL</th>
+                        <th class="px-4 py-3 font-semibold text-right">Thành tiền Thuế</th>
+                        <th class="px-4 py-3 font-semibold text-center">Tình trạng</th>`;
+                    displayData.forEach(item => {
                         const isMismatch = !item.is_match;
                         const rowClass = isMismatch ? 'bg-red-50' : '';
-                        const posVal = typeof item.pos_value === 'number' ? item.pos_value.toLocaleString('vi-VN') : item.pos_value;
-                        const sseVal = typeof item.sse_value === 'number' ? item.sse_value.toLocaleString('vi-VN') : item.sse_value;
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
+                        const posVal = item.pos_value !== null ? item.pos_value.toLocaleString('vi-VN') : 'Không có';
+                        const sseVal = item.sse_value !== null ? item.sse_value.toLocaleString('vi-VN') : 'Không có';
+                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span><br><span class="text-xs text-gray-500">${item.status}</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
                         tableBodyHtml += `<tr class="${rowClass}">
                             <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.product_name}</td>
+                            <td class="px-4 py-3 text-gray-700 font-mono text-sm">${item.invoice_id}</td>
                             <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
                             <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
                             <td class="px-4 py-3 text-center">${resultCell}</td>
                         </tr>`;
+                    });
+                } else if (type === 'TienMat') {
+                    tableHeadersHtml = `<th class="px-4 py-3 font-semibold text-left">Cửa hàng</th><th class="px-4 py-3 font-semibold text-left">Đối tượng</th><th class="px-4 py-3 font-semibold text-right">Tiền mặt POS</th><th class="px-4 py-3 font-semibold text-right">Tiền mặt KT</th><th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
+                    displayData.forEach(item => {
+                        const isMismatch = !item.is_match;
+                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
+                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td><td class="px-4 py-3 text-gray-700">${item.product_name}</td><td class="px-4 py-3 text-gray-700 text-right">${item.pos_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-gray-700 text-right">${item.sse_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-center">${resultCell}</td></tr>`;
                     });
                 } else if (type === 'CongNo') {
-                    tableHeadersHtml = `
-                        <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
-                        <th class="px-4 py-3 font-semibold text-left">Mã Khách</th>
-                        <th class="px-4 py-3 font-semibold text-left">Tên Khách hàng</th>
-                        <th class="px-4 py-3 font-semibold text-right">Phát sinh nợ POS (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-right">Phát sinh nợ SSE (VND)</th>
-                        <th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    data.forEach(item => {
+                    tableHeadersHtml = `<th class="px-4 py-3 font-semibold text-left">Cửa hàng</th><th class="px-4 py-3 font-semibold text-left">Mã/Tên Khách</th><th class="px-4 py-3 font-semibold text-right">Nợ POS</th><th class="px-4 py-3 font-semibold text-right">Nợ KT</th><th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
+                    displayData.forEach(item => {
                         const isMismatch = !item.is_match;
-                        const rowClass = isMismatch ? 'bg-red-50' : '';
-                        const posVal = typeof item.pos_value === 'number' ? item.pos_value.toLocaleString('vi-VN') : item.pos_value;
-                        const sseVal = typeof item.sse_value === 'number' ? item.sse_value.toLocaleString('vi-VN') : item.sse_value;
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span><br><span class="text-xs text-gray-500">${item.status || ''}</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${rowClass}">
-                            <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.customer_code}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.customer_name}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
-                            <td class="px-4 py-3 text-center">${resultCell}</td>
-                        </tr>`;
+                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span><br><span class="text-xs">${item.status}</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
+                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td><td class="px-4 py-3 text-gray-700">${item.customer_code} - ${item.customer_name}</td><td class="px-4 py-3 text-gray-700 text-right">${item.pos_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-gray-700 text-right">${item.sse_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-center">${resultCell}</td></tr>`;
                     });
-                } else { // SanLuong
-                    tableHeadersHtml = `
-                        <th class="px-4 py-3 font-semibold text-left">Cửa hàng</th>
-                        <th class="px-4 py-3 font-semibold text-left">Mặt hàng</th>
-                        <th class="px-4 py-3 font-semibold text-right">Sản lượng POS</th>
-                        <th class="px-4 py-3 font-semibold text-right">Sản lượng Kế toán</th>
-                        <th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    data.forEach(item => {
+                } else {
+                    tableHeadersHtml = `<th class="px-4 py-3 font-semibold text-left">Cửa hàng</th><th class="px-4 py-3 font-semibold text-left">Mặt hàng</th><th class="px-4 py-3 font-semibold text-right">SL POS</th><th class="px-4 py-3 font-semibold text-right">SL Kế toán</th><th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
+                    displayData.forEach(item => {
                         const isMismatch = !item.is_match;
-                        const rowClass = isMismatch ? 'bg-red-50' : '';
-                        const posVal = typeof item.pos_value === 'number' ? item.pos_value.toLocaleString('vi-VN') : item.pos_value;
-                        const sseVal = typeof item.sse_value === 'number' ? item.sse_value.toLocaleString('vi-VN') : item.sse_value;
                         const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${rowClass}">
-                            <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
-                            <td class="px-4 py-3 text-gray-700">${item.product_name}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
-                            <td class="px-4 py-3 text-center">${resultCell}</td>
-                        </tr>`;
+                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td><td class="px-4 py-3 text-gray-700">${item.product_name}</td><td class="px-4 py-3 text-gray-700 text-right">${item.pos_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-gray-700 text-right">${item.sse_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-center">${resultCell}</td></tr>`;
                     });
                 }
 
+                // Cảnh báo người dùng nếu dữ liệu bị ẩn bớt do quá dài
+                if (data.length > MAX_RENDER_ROWS) {
+                    const remaining = data.length - MAX_RENDER_ROWS;
+                    tableBodyHtml += `<tr><td colspan="5" class="px-4 py-4 text-center font-bold text-blue-600 bg-blue-50">... Đã ẩn bớt ${remaining.toLocaleString('vi-VN')} kết quả phía dưới để chống treo trình duyệt. Vui lòng bấm "Tải về file Excel" để xem toàn bộ chi tiết. ...</td></tr>`;
+                }
+
+                // Nhãn thông báo đặc biệt cho chế độ Quản trị ngoại lệ
+                let extraNotice = type === 'HoaDon' ? '<p class="text-sm text-red-600 font-bold mt-1">💡 CHẾ ĐỘ NGOẠI LỆ: Bảng này chỉ liệt kê các Hóa đơn LỆCH hoặc THIẾU.</p>' : '';
+
                 let fullHtml = `<div class="flex justify-between items-center mb-4">
-                                <h3 class="text-xl font-bold text-gray-800">Kết quả Đối soát</h3>
+                                <div>
+                                    <h3 class="text-xl font-bold text-gray-800">Kết quả Đối soát</h3>
+                                    ${extraNotice}
+                                </div>
                                 <button id="download-excel-btn" class="py-2 px-4 border rounded-md shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700">
                                     Tải về file Excel
                                 </button>
@@ -320,9 +442,8 @@
                     alert("Không có dữ liệu để tải về.");
                     return;
                 }
-
                 const btn = document.getElementById('download-excel-btn');
-                btn.textContent = 'Đang tạo file...';
+                btn.textContent = 'Đang tạo file Excel (Vui lòng chờ)...';
                 btn.disabled = true;
 
                 try {
@@ -331,15 +452,12 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(reconciliationResultPayload)
                     });
-
-                    if (!response.ok) throw new Error('Lỗi từ server khi tạo file Excel.');
-
+                    if (!response.ok) throw new Error('Lỗi tạo file');
                     const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.style.display = 'none';
                     a.href = url;
-
                     const disposition = response.headers.get('Content-Disposition');
                     let filename = 'KetQuaDoiSoat.xlsx';
                     if (disposition && disposition.indexOf('attachment') !== -1) {
@@ -352,17 +470,14 @@
                     a.click();
                     window.URL.revokeObjectURL(url);
                     document.body.removeChild(a);
-
                 } catch (error) {
-                    console.error('Lỗi khi tải file Excel:', error);
-                    alert('Đã xảy ra lỗi khi tải file. Vui lòng thử lại.');
+                    alert('Lỗi tải file.');
                 } finally {
                     btn.textContent = 'Tải về file Excel';
                     btn.disabled = false;
                 }
             }
 
-            // --- Hàm tiện ích ---
             function setButtonLoading(btn, btnText, btnLoader, isLoading, loadingText) {
                 if (isLoading) {
                     btnText.textContent = loadingText;
@@ -370,13 +485,15 @@
                     btn.disabled = true;
                     btn.classList.add('opacity-75', 'cursor-not-allowed');
                 } else {
-                    btnText.textContent = btn.id === 'download-report-btn' ? 'Tải báo cáo lên Google Drive' : 'Thực hiện Đối soát';
+                    btnText.textContent = btn.id === 'download-report-btn' ? 'Tải báo cáo lên Google Drive' : 
+                                          btn.id === 'aggregate-btn' ? 'Kiểm tra & Tải Excel Tổng hợp' : 'Thực hiện Đối soát';
                     btnLoader.classList.add('hidden');
                     btn.disabled = false;
                     btn.classList.remove('opacity-75', 'cursor-not-allowed');
                 }
             }
             function showMessage(result) {
+                const statusMessage = document.getElementById('status-message');
                 statusMessage.innerHTML = result.message;
                 statusMessage.className = 'mb-4 p-4 rounded-md text-center';
                 if (result.status === 'success') statusMessage.classList.add('bg-green-100', 'text-green-800');
@@ -385,7 +502,7 @@
                 statusMessage.classList.remove('hidden');
             }
             function hideMessage() {
-                statusMessage.classList.add('hidden');
+                document.getElementById('status-message').classList.add('hidden');
             }
         });
     </script>
