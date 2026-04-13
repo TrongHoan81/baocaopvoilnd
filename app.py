@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from flask import Flask, render_template, request, jsonify, Response, send_file, stream_with_context
 import io
+import json
 from datetime import datetime
 import pandas as pd
 import os
@@ -112,30 +113,35 @@ def check_report_exists():
     station_code = request.args.get('station_code', 'ALL').strip()
 
     try:
-        creds = google_handler.get_google_credentials()
-        drive_service = build('drive', 'v3', credentials=creds)
-
         if report_type == 'HD01':
             if not report_year or not report_month: return jsonify({"exists": False})
-            year_folder_name = f"Năm {report_year}"
-            month_folder_name = f"Tháng {int(report_month)}"
+            
+            import bq_handler
+            try:
+                client = bq_handler.get_bq_client()
+                query = f"""
+                    SELECT 1 
+                    FROM `{client.project}.pvoil_data.HD01_Master_Data` 
+                    WHERE Thang_Bao_Cao = {int(report_month)} AND Nam_Bao_Cao = {int(report_year)} 
+                    LIMIT 1
+                """
+                job = client.query(query)
+                results = list(job.result())
+                
+                if len(results) > 0:
+                    if station_code != 'ALL':
+                        return jsonify({"exists": True, "message": f"Dữ liệu BKHĐ tháng {report_month}/{report_year} đã tồn tại trên BigQuery. Dữ liệu cửa hàng bạn chọn sẽ được cập nhật/ghi đè nối tiếp."})
+                    return jsonify({"exists": True, "message": f"Dữ liệu BKHĐ của tháng {report_month}/{report_year} đã có sẵn trên BigQuery. Việc tải lại sẽ cập nhật thêm các hóa đơn mới."})
+                return jsonify({"exists": False})
+            except Exception as e:
+                print(f"Lỗi khi check BigQuery: {e}")
+                return jsonify({"exists": False})
 
-            year_folder_id = google_handler._search_file_in_folder(drive_service, year_folder_name, config.GOOGLE_DRIVE_ROOT_FOLDER_ID, "application/vnd.google-apps.folder")
-            if not year_folder_id: return jsonify({"exists": False})
-            month_folder_id = google_handler._search_file_in_folder(drive_service, month_folder_name, year_folder_id, "application/vnd.google-apps.folder")
-            if not month_folder_id: return jsonify({"exists": False})
-
-            # TÌM TẤT CẢ CÁC FILE CÓ TIỀN TỐ BKHĐ.MM.YYYY_ (Theo chuẩn file 1-1)
-            query = f"name contains 'BKHĐ.{int(report_month):02d}.{report_year}_' and '{month_folder_id}' in parents and trashed = false"
-            results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-            files = results.get('files', [])
-
-            if files:
-                if station_code != 'ALL':
-                    return jsonify({"exists": True, "message": f"Dữ liệu BKHĐ tháng {report_month}/{report_year} đã tồn tại. Dữ liệu cửa hàng bạn chọn sẽ được cập nhật."})
-                return jsonify({"exists": True, "message": f"Hệ thống tìm thấy {len(files)} file BKHĐ (Cấu trúc Độc lập) của tháng {report_month}/{report_year}. Việc tải lại sẽ XÓA SẠCH các file cũ và TẢI LẠI TOÀN BỘ."})
-            return jsonify({"exists": False})
         else:
+            # Luồng BH03
+            creds = google_handler.get_google_credentials()
+            drive_service = build('drive', 'v3', credentials=creds)
+            
             if not report_date_str: return jsonify({"exists": False})
             d = datetime.strptime(report_date_str, '%Y-%m-%d')
             file_name = f"BCBH.{d.strftime('%d.%m.%Y')}"
@@ -147,7 +153,8 @@ def check_report_exists():
             file_id = google_handler._search_file_in_folder(drive_service, file_name, month_folder_id, "application/vnd.google-apps.spreadsheet")
             if file_id: return jsonify({"exists": True, "message": f"Báo cáo BH03 ngày {d.strftime('%d/%m/%Y')} đã tồn tại trên Google Drive."})
             return jsonify({"exists": False})
-    except Exception:
+    except Exception as e:
+        print(f"Lỗi hàm check_report_exists: {e}")
         return jsonify({"exists": False})
 
 @app.route('/aggregate_hd01', methods=['GET'])
@@ -156,57 +163,21 @@ def aggregate_hd01():
         month = request.args.get('month', '').strip()
         year = request.args.get('year', '').strip()
         if not month or not year: return "Thiếu tham số tháng/năm", 400
+        
+        import bq_handler
+        from data_processors.processor_hd01 import generate_excel_from_bq
+
+        agg_prod, agg_status = bq_handler.get_aggregated_data(month, year)
+        
+        if agg_prod.empty:
+            return f"Không tìm thấy dữ liệu hóa đơn của tháng {month}/{year} trên BigQuery.", 404
             
-        creds = google_handler.get_google_credentials()
-        drive_service = build('drive', 'v3', credentials=creds)
-        
-        year_folder_id = google_handler._search_file_in_folder(drive_service, f"Năm {year}", config.GOOGLE_DRIVE_ROOT_FOLDER_ID, "application/vnd.google-apps.folder")
-        if not year_folder_id: return "Không tìm thấy thư mục Năm", 404
-        month_folder_id = google_handler._search_file_in_folder(drive_service, f"Tháng {int(month)}", year_folder_id, "application/vnd.google-apps.folder")
-        if not month_folder_id: return "Không tìm thấy thư mục Tháng", 404
-        
-        # SỬ DỤNG QUERY TÌM THEO TÊN FILE CỦA KIẾN TRÚC 1-1
-        query = f"name contains 'BKHĐ.{int(month):02d}.{year}_' and '{month_folder_id}' in parents and trashed = false"
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-        files = results.get('files', [])
-        
-        if not files: return f"Không tìm thấy dữ liệu BKHĐ của tháng {month}/{year}", 404
-        
-        dict_dfs = {}
-        
-        # =====================================================================
-        # CHIẾN THUẬT MỚI: XUẤT THẲNG EXCEL QUA API DRIVE (CHỐNG LỖI 500 PANDAS)
-        # Giờ đây các file nhỏ gọn, API export sẽ không bao giờ bị dính lỗi 403 SizeLimit
-        # =====================================================================
-        for f in files:
-            file_id = f.get('id')
-            try:
-                # Ra lệnh Google Drive xuất nguyên file thành file .xlsx dạng nhị phân (Bytes)
-                excel_content = drive_service.files().export(
-                    fileId=file_id, 
-                    mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                ).execute()
-                
-                # Dùng Pandas đọc bộ nhớ nhị phân này 1 lần duy nhất để lấy TẤT CẢ các sheet
-                # dtype=str để ép Pandas không tự ý xóa số 0 đầu dòng của Số Hóa Đơn
-                file_dfs = pd.read_excel(io.BytesIO(excel_content), sheet_name=None, dtype=str)
-                
-                for ws_title, df in file_dfs.items():
-                    if ws_title.strip() in ["Trang tính 1", "Sheet1", "Sheet", "Trang tính", "Tổng hợp"]: continue
-                    if not df.empty:
-                        dict_dfs[ws_title] = df
-            except Exception as e:
-                print(f"Lỗi khi tải file {f.get('name')}: {e}")
-                continue
-                
-        if not dict_dfs: return "Các file báo cáo đều trống rỗng", 400
-            
-        from data_processors.processor_hd01 import aggregate_hd01_data
-        excel_bytes = aggregate_hd01_data(dict_dfs)
+        excel_bytes = generate_excel_from_bq(agg_prod, agg_status)
         if not excel_bytes: return "Lỗi khi tạo Pivot Table", 500
             
         return send_file(excel_bytes, as_attachment=True, download_name=f"TongHop_HoaDon_{int(month):02d}_{year}.xlsx", mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     except Exception as e:
+        print(f"Lỗi Aggregate BigQuery: {e}")
         return f"Lỗi máy chủ nội bộ: {str(e)}", 500
 
 # ==========================
@@ -315,107 +286,153 @@ def download_report_stream():
 @app.route('/reconcile', methods=['POST'])
 def reconcile():
     try:
-        reconcile_date_str = request.form.get('reconcile_date')
         reconcile_type = request.form.get('reconcile_type')
 
         if 'accounting_file' not in request.files:
             return jsonify({"status": "error", "message": "Vui lòng tải lên file từ phần mềm kế toán."}), 400
 
         sse_file = request.files['accounting_file']
+        
+        # Rất Quan Trọng: Đọc toàn bộ file vào RAM ngay lập tức để tránh Request bị đóng ngắt giữa chừng
+        file_bytes = sse_file.read()
+        file_name = sse_file.filename
 
-        creds = google_handler.get_google_credentials()
-        gspread_client = gspread.authorize(creds)
-        drive_service = build('drive', 'v3', credentials=creds)
+        # Lấy trước các biến Form
+        target_month = request.form.get('reconcile_month')
+        target_year = request.form.get('reconcile_year')
+        reconcile_date_str = request.form.get('reconcile_date')
 
-        if reconcile_type == 'HoaDon':
-            target_month = request.form.get('reconcile_month')
-            target_year = request.form.get('reconcile_year')
-            
-            if not target_month or not target_year:
-                return jsonify({"status": "error", "message": "Thiếu tháng/năm đối soát hóa đơn."}), 400
+        # === ĐỊNH NGHĨA GENERATOR ĐỂ XẢ DATA VỀ TRÌNH DUYỆT LIÊN TỤC ===
+        def generate():
+            q = queue.Queue()
 
-            try:
-                tax_df = reconciliation_handler.read_tax_excel_file(sse_file.stream, target_month, target_year)
-            except ValueError as ve:
-                return jsonify({"status": "error", "message": str(ve)}), 400
+            # Hàm con để gửi Log vào hàng chờ
+            def progress_callback(msg):
+                q.put({"type": "log", "message": msg})
 
-            year_folder_id = google_handler._search_file_in_folder(drive_service, f"Năm {target_year}", config.GOOGLE_DRIVE_ROOT_FOLDER_ID, "application/vnd.google-apps.folder")
-            if not year_folder_id: return jsonify({"status": "error", "message": f"Không tìm thấy dữ liệu năm {target_year} trên Drive."}), 400
-            
-            month_folder_id = google_handler._search_file_in_folder(drive_service, f"Tháng {int(target_month)}", year_folder_id, "application/vnd.google-apps.folder")
-            if not month_folder_id: return jsonify({"status": "error", "message": f"Không tìm thấy dữ liệu tháng {target_month} trên Drive."}), 400
-            
-            # SỬ DỤNG QUERY TÌM THEO TÊN FILE CỦA KIẾN TRÚC 1-1 TRONG ĐỐI SOÁT
-            query = f"name contains 'BKHĐ.{int(target_month):02d}.{target_year}_' and '{month_folder_id}' in parents and trashed = false"
-            results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-            files = results.get('files', [])
-            
-            if not files:
-                return jsonify({"status": "report_not_found", "message": f"Không tìm thấy dữ liệu BKHĐ của tháng {target_month}/{target_year} trên Drive."})
-
-            dict_dfs = {}
-            # ÁP DỤNG CÙNG CÔNG NGHỆ XUẤT EXCEL CHO ĐỐI SOÁT (Tải 45 file con)
-            for f in files:
-                file_id = f.get('id')
+            # Hàm Công nhân: Làm việc mệt nhọc ở Background Thread
+            def worker():
                 try:
-                    excel_content = drive_service.files().export(
-                        fileId=file_id, 
-                        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                    ).execute()
-                    
-                    file_dfs = pd.read_excel(io.BytesIO(excel_content), sheet_name=None, dtype=str)
-                    
-                    for ws_title, df in file_dfs.items():
-                        if ws_title.strip() in ["Trang tính 1", "Sheet1", "Sheet", "Trang tính", "Tổng hợp"]: continue
-                        if not df.empty:
-                            dict_dfs[ws_title] = df
+                    file_stream = io.BytesIO(file_bytes)
+                    file_stream.name = file_name # Fake tên file để Pandas nhận diện định dạng
+
+                    # --- NHÁNH 1: ĐỐI SOÁT HÓA ĐƠN TRÊN BIGQUERY ---
+                    if reconcile_type == 'HoaDon':
+                        if not target_month or not target_year:
+                            q.put({"type": "result", "status": "error", "message": "Thiếu tháng/năm đối soát hóa đơn."})
+                            return
+
+                        progress_callback("... Đang kiểm tra dữ liệu BigQuery.....")
+                        import bq_handler
+                        client = bq_handler.get_bq_client()
+                        query = f"SELECT 1 FROM `{client.project}.pvoil_data.HD01_Master_Data` WHERE Thang_Bao_Cao = {int(target_month)} AND Nam_Bao_Cao = {int(target_year)} LIMIT 1"
+                        job = client.query(query)
+                        
+                        if len(list(job.result())) == 0:
+                            q.put({'type': 'result', 'status': 'report_not_found', 'message': f'Dữ liệu hóa đơn tháng {target_month}/{target_year} chưa có trên hệ thống BigQuery.'})
+                            return
+
+                        import reconciliation_handler
+                        tax_df = reconciliation_handler.read_tax_excel_file(file_stream, target_month=target_month, target_year=target_year, progress_callback=progress_callback)
+                        results = reconciliation_handler.reconcile_invoice_data_bq(target_month, target_year, tax_df, progress_callback=progress_callback)
+
+                        progress_callback("...... Đang vẽ bảng kết quả........")
+                        q.put({'type': 'result', 'status': 'success', 'reconcile_type': reconcile_type, 'data': results})
+
+                    # --- NHÁNH 2: ĐỐI SOÁT BH03 TRÊN GOOGLE DRIVE (Giữ nguyên logic cũ) ---
+                    else:
+                        progress_callback("... Đang xác thực với Google Drive.....")
+                        creds = google_handler.get_google_credentials()
+                        gspread_client = gspread.authorize(creds)
+                        drive_service = build('drive', 'v3', credentials=creds)
+
+                        if not reconcile_date_str:
+                            q.put({"type": "result", "status": "error", "message": "Vui lòng chọn ngày đối soát."})
+                            return
+
+                        reconcile_date = datetime.strptime(reconcile_date_str, '%Y-%m-%d')
+                        date_str_dmy = reconcile_date.strftime('%d.%m.%Y')
+
+                        progress_callback(f"... Đang tìm báo cáo ngày {date_str_dmy}.....")
+                        year_folder_id = google_handler.get_or_create_gdrive_folder(drive_service, f"Năm {reconcile_date.year}", config.GOOGLE_DRIVE_ROOT_FOLDER_ID)
+                        month_folder_id = google_handler.get_or_create_gdrive_folder(drive_service, f"Tháng {reconcile_date.month}", year_folder_id)
+
+                        if reconcile_type == 'CongNo':
+                            try: pos_spreadsheet = gspread_client.open(f"CongNo.{date_str_dmy}", folder_id=month_folder_id)
+                            except gspread.exceptions.SpreadsheetNotFound: 
+                                q.put({"type": "result", "status": "report_not_found", "message": f"Không tìm thấy báo cáo POS (CongNo) ngày {date_str_dmy}."})
+                                return
+                            
+                            progress_callback("... Đang tải dữ liệu POS từ Google Sheet.....")
+                            pos_sheet = pos_spreadsheet.worksheet('TongHopCongNo')
+                            pos_data = pos_sheet.get_all_values()
+                            pos_df = pd.DataFrame(pos_data[1:], columns=pos_data[0]) if len(pos_data) > 1 else pd.DataFrame()
+                        else:
+                            try: pos_spreadsheet = gspread_client.open(f"BCBH.{date_str_dmy}", folder_id=month_folder_id)
+                            except gspread.exceptions.SpreadsheetNotFound: 
+                                q.put({"type": "result", "status": "report_not_found", "message": f"Không tìm thấy báo cáo POS (BCBH) ngày {date_str_dmy}."})
+                                return
+                            
+                            progress_callback("... Đang tải dữ liệu POS từ Google Sheet.....")
+                            pos_sheet = pos_spreadsheet.worksheet('TongHopBCBH')
+                            pos_data = pos_sheet.get_all_values()
+                            pos_df = pd.DataFrame(pos_data[1:], columns=pos_data[0]) if len(pos_data) > 1 else pd.DataFrame()
+
+                        import reconciliation_handler
+                        progress_callback("... Đang đọc file Kế toán (XML/Excel).....")
+                        
+                        if reconcile_type == 'SanLuong':
+                            sse_df = reconciliation_handler.read_sse_product_xml(file_stream)
+                            if sse_df is None:
+                                q.put({"type": "result", "status": "error", "message": "Định dạng file kế toán (sản lượng) không hợp lệ."})
+                                return
+                            progress_callback("... Bắt đầu so khớp dữ liệu Sản lượng.....")
+                            reconciliation_results = reconciliation_handler.reconcile_product_data(pos_df, sse_df)
+                            
+                        elif reconcile_type == 'TienMat':
+                            sse_df = reconciliation_handler.read_sse_cash_xml(file_stream, reconcile_date)
+                            if sse_df is None:
+                                q.put({"type": "result", "status": "error", "message": "Định dạng file kế toán (tiền mặt) không hợp lệ."})
+                                return
+                            progress_callback("... Bắt đầu so khớp dữ liệu Tiền mặt.....")
+                            reconciliation_results = reconciliation_handler.reconcile_cash_data(pos_df, sse_df)
+                            
+                        elif reconcile_type == 'CongNo':
+                            sse_df = reconciliation_handler.read_sse_debt_xml(file_stream)
+                            if sse_df is None:
+                                q.put({"type": "result", "status": "error", "message": "Định dạng file kế toán (công nợ) không hợp lệ."})
+                                return
+                            progress_callback("... Bắt đầu so khớp dữ liệu Công nợ.....")
+                            reconciliation_results = reconciliation_handler.reconcile_debt_data(pos_df, sse_df)
+                        else:
+                            q.put({"type": "result", "status": "error", "message": "Loại đối soát không hợp lệ."})
+                            return
+
+                        progress_callback("...... Đang vẽ bảng kết quả........")
+                        q.put({"type": "result", "status": "success", "data": reconciliation_results, "reconcile_type": reconcile_type})
+
                 except Exception as e:
-                    print(f"Lỗi khi đọc file đối soát {f.get('name')}: {e}")
-                    continue
+                    print(f"Lỗi khi đối soát trong luồng nền: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    q.put({"type": "result", "status": "error", "message": f"Đã xảy ra lỗi không mong muốn: {str(e)}"})
 
-            reconciliation_results = reconciliation_handler.reconcile_invoice_data(dict_dfs, tax_df)
-            return jsonify({"status": "success", "data": reconciliation_results, "reconcile_type": reconcile_type})
+            # Khởi động luồng chạy song song
+            t = threading.Thread(target=worker)
+            t.start()
 
-        # --- CÁC NHÁNH CŨ GIỮ NGUYÊN (Dữ liệu bé nên dùng gspread an toàn) ---
-        if not reconcile_date_str: return jsonify({"status": "error", "message": "Vui lòng chọn ngày đối soát."}), 400
-        reconcile_date = datetime.strptime(reconcile_date_str, '%Y-%m-%d')
-        date_str_dmy = reconcile_date.strftime('%d.%m.%Y')
-        year_folder_id = google_handler.get_or_create_gdrive_folder(drive_service, f"Năm {reconcile_date.year}", config.GOOGLE_DRIVE_ROOT_FOLDER_ID)
-        month_folder_id = google_handler.get_or_create_gdrive_folder(drive_service, f"Tháng {reconcile_date.month}", year_folder_id)
+            # Trả dữ liệu ra API liên tục
+            while True:
+                item = q.get()
+                yield json.dumps(item) + "\n"  # Định dạng NDJSON chuẩn
+                if item.get("type") == "result":
+                    break
 
-        if reconcile_type == 'CongNo':
-            try: pos_spreadsheet = gspread_client.open(f"CongNo.{date_str_dmy}", folder_id=month_folder_id)
-            except gspread.exceptions.SpreadsheetNotFound: return jsonify({"status": "report_not_found", "message": f"Không tìm thấy báo cáo POS (CongNo) ngày {date_str_dmy}."})
-            pos_sheet = pos_spreadsheet.worksheet('TongHopCongNo')
-            pos_data = pos_sheet.get_all_values()
-            pos_df = pd.DataFrame(pos_data[1:], columns=pos_data[0]) if len(pos_data) > 1 else pd.DataFrame()
-        else:
-            try: pos_spreadsheet = gspread_client.open(f"BCBH.{date_str_dmy}", folder_id=month_folder_id)
-            except gspread.exceptions.SpreadsheetNotFound: return jsonify({"status": "report_not_found", "message": f"Không tìm thấy báo cáo POS (BCBH) ngày {date_str_dmy}."})
-            pos_sheet = pos_spreadsheet.worksheet('TongHopBCBH')
-            pos_data = pos_sheet.get_all_values()
-            pos_df = pd.DataFrame(pos_data[1:], columns=pos_data[0]) if len(pos_data) > 1 else pd.DataFrame()
-
-        if reconcile_type == 'SanLuong':
-            sse_df = reconciliation_handler.read_sse_product_xml(sse_file.stream)
-            if sse_df is None: return jsonify({"status": "error", "message": "Định dạng file kế toán (sản lượng) không hợp lệ."}), 400
-            reconciliation_results = reconciliation_handler.reconcile_product_data(pos_df, sse_df)
-        elif reconcile_type == 'TienMat':
-            sse_df = reconciliation_handler.read_sse_cash_xml(sse_file.stream, reconcile_date)
-            if sse_df is None: return jsonify({"status": "error", "message": "Định dạng file kế toán (tiền mặt) không hợp lệ."}), 400
-            reconciliation_results = reconciliation_handler.reconcile_cash_data(pos_df, sse_df)
-        elif reconcile_type == 'CongNo':
-            sse_df = reconciliation_handler.read_sse_debt_xml(sse_file.stream)
-            if sse_df is None: return jsonify({"status": "error", "message": "Định dạng file kế toán (công nợ) không hợp lệ."}), 400
-            reconciliation_results = reconciliation_handler.reconcile_debt_data(pos_df, sse_df)
-        else:
-            return jsonify({"status": "error", "message": "Loại đối soát không hợp lệ."}), 400
-
-        return jsonify({"status": "success", "data": reconciliation_results, "reconcile_type": reconcile_type})
+        return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
 
     except Exception as e:
-        print(f"Lỗi khi đối soát: {e}")
-        return jsonify({"status": "error", "message": f"Đã xảy ra lỗi không mong muốn: {str(e)}"}), 500
+        print(f"Lỗi khởi tạo luồng đối soát (Main thread): {e}")
+        return jsonify({"status": "error", "message": f"Lỗi khởi tạo luồng đối soát: {str(e)}"}), 500
 
 @app.route('/download_excel', methods=['POST'])
 def download_excel():

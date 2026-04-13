@@ -15,6 +15,7 @@ import re
 import config
 import google_handler
 from monthly_auto_update import update_monthly_after_download
+import bq_handler  # THÊM MỚI: Import module xử lý BigQuery
 
 try:
     from api_handlers import api_bh03, api_hd01
@@ -67,51 +68,48 @@ def download_report_generator(report_date: datetime, report_type="BH03", station
             stores_to_process = dict(all_stores)
 
         # ==========================================
-        # LUỒNG 1: HD01 - KIẾN TRÚC 1 CỬA HÀNG = 1 FILE
+        # LUỒNG 1: HD01 - KIẾN TRÚC GHI TRỰC TIẾP BIGQUERY
         # ==========================================
         if report_type == "HD01":
-            yield _sse("[3/3] Bắt đầu tải dữ liệu BKHĐ (Kiến trúc 1-1)...")
+            yield _sse("[3/3] Bắt đầu tải dữ liệu BKHĐ (Ghi trực tiếp vào BigQuery)...")
             if not report_year or not report_month: raise ValueError("Thiếu tham số Năm/Tháng.")
-                
-            year_folder_id = google_handler.get_or_create_gdrive_folder(drive_service, f"Năm {report_year}", config.GOOGLE_DRIVE_ROOT_FOLDER_ID)
-            month_folder_id = google_handler.get_or_create_gdrive_folder(drive_service, f"Tháng {int(report_month)}", year_folder_id)
+            
+            # KHỞI TẠO/KIỂM TRA BẢNG BIGQUERY
+            bq_handler.init_bq_table()
             
             # --- TRƯỜNG HỢP 1: TẢI "TẤT CẢ CỬA HÀNG" ---
             if station_code_filter == 'ALL' or not station_code_filter:
-                # Dọn rác: Xóa toàn bộ file HD01 của tháng đó trước khi tải mới
-                query = f"name contains 'BKHĐ.{int(report_month):02d}.{report_year}_' and '{month_folder_id}' in parents and trashed = false"
-                old_files = drive_service.files().list(q=query, fields="files(id)").execute().get('files', [])
-                if old_files:
-                    yield _sse(f"  -> Đang dọn dẹp {len(old_files)} file cũ trên Google Drive...")
-                    for of in old_files:
-                        try: drive_service.files().delete(fileId=of['id']).execute()
-                        except Exception: pass
-                    yield _sse("  ✔ Dọn dẹp hoàn tất, sẵn sàng tải mới.")
-
                 success_count = 0
                 failed_stores = []
                 stores_list = list(stores_to_process.items())
                 total_stores = len(stores_list)
 
-                # Lặp qua từng cửa hàng và tạo file riêng
                 for idx, (store_code, store_name) in enumerate(stores_list, 1):
-                    file_name = f"BKHĐ.{int(report_month):02d}.{report_year}_{store_name}"
-                    yield _sse(f"➤ [{idx}/{total_stores}] Đang tải và tạo file: {file_name}...")
+                    yield _sse(f"➤ [{idx}/{total_stores}] Đang tải & bơm dữ liệu: {store_name} lên BigQuery...")
                     
-                    spreadsheet_hd01 = google_handler.get_or_create_gsheet(gspread_client, drive_service, file_name, month_folder_id)
                     is_success = False
-                    
                     for attempt in range(1, _safe_int(config.MAX_ATTEMPTS) + 1):
                         try:
+                            # 1. Tải Data thô
                             df_raw = api_hd01.download_hd01_report(session, access_token, store_code, report_year, report_month)
                             if isinstance(df_raw, Exception): raise df_raw
+                            
+                            # 2. Làm sạch
                             df_clean = processor_hd01.process_hd01(df_raw, store_name)
+                            
                             if not df_clean.empty:
                                 if 'Ngày hóa đơn' in df_clean.columns: df_clean['Ngày hóa đơn'] = df_clean['Ngày hóa đơn'].astype(str).str.slice(0, 10)
-                                google_handler.upload_df_to_gsheet(spreadsheet_hd01, store_name, df_clean)
-                                yield _sse(f"     ✔ Đã lưu thành công.")
+                                
+                                # 3. Xóa dữ liệu cũ (Dọn rác/Idempotent) & Bơm dữ liệu mới
+                                bq_handler.delete_old_data(store_code, report_month, report_year)
+                                bq_handler.upload_dataframe(df_clean, store_code, report_month, report_year)
+                                
+                                yield _sse(f"     ✔ Đã bơm thành công {len(df_clean)} dòng lên BigQuery.")
                                 success_count += 1
-                            else: yield _sse("     ❌ Không có dữ liệu.")
+                            else: 
+                                # Nếu file rỗng thì vẫn phải xóa data cũ (trường hợp tháng trước có, tháng này PVOIL xóa)
+                                bq_handler.delete_old_data(store_code, report_month, report_year)
+                                yield _sse("     ❌ Không có dữ liệu.")
                             is_success = True
                             break 
                         except Exception as e:
@@ -120,14 +118,7 @@ def download_report_generator(report_date: datetime, report_type="BH03", station
                     
                     if not is_success: failed_stores.append(store_name)
 
-                    # Dọn dẹp sheet thừa
-                    try:
-                        wks = spreadsheet_hd01.worksheets()
-                        for ws in wks:
-                            if ws.title.strip() in {"Trang tính 1", "Sheet1", "Sheet", "Trang tính"} and len(wks) > 1: spreadsheet_hd01.del_worksheet(ws)
-                    except Exception: pass
-
-                msg = f"Hoàn tất! Đã xử lý độc lập thành công {success_count}/{total_stores} CHXD."
+                msg = f"Hoàn tất! Đã bơm thành công {success_count}/{total_stores} CHXD lên BigQuery."
                 if failed_stores: msg += f" | Thất bại: {', '.join(failed_stores)}"
                 yield _sse(f"FINAL_MESSAGE:{json.dumps({'status': 'success', 'message': msg})}")
                 return
@@ -136,37 +127,36 @@ def download_report_generator(report_date: datetime, report_type="BH03", station
             else:
                 store_code = station_code_filter
                 store_name = all_stores[store_code]
-                target_file_name = f"BKHĐ.{int(report_month):02d}.{report_year}_{store_name}"
-                yield _sse(f"➤ ĐANG XỬ LÝ CẬP NHẬT FILE: [{target_file_name}]...")
+                yield _sse(f"➤ ĐANG CẬP NHẬT DỮ LIỆU LÊN BIGQUERY CHO: [{store_name}]...")
 
-                # Rất đơn giản: Gọi hàm get_or_create. Có thì ghi đè, không có thì tạo mới
-                spreadsheet_hd01 = google_handler.get_or_create_gsheet(gspread_client, drive_service, target_file_name, month_folder_id)
                 is_success = False
-                
                 for attempt in range(1, _safe_int(config.MAX_ATTEMPTS) + 1):
                     try:
+                        # 1. Tải Data thô
                         df_raw = api_hd01.download_hd01_report(session, access_token, store_code, report_year, report_month)
                         if isinstance(df_raw, Exception): raise df_raw
+                        
+                        # 2. Làm sạch
                         df_clean = processor_hd01.process_hd01(df_raw, store_name)
+                        
                         if not df_clean.empty:
                             if 'Ngày hóa đơn' in df_clean.columns: df_clean['Ngày hóa đơn'] = df_clean['Ngày hóa đơn'].astype(str).str.slice(0, 10)
-                            google_handler.upload_df_to_gsheet(spreadsheet_hd01, store_name, df_clean)
-                            yield _sse(f"     ✔ Cập nhật thành công vào {target_file_name}.")
+                            
+                            # 3. Xóa data cũ & Bơm lên BQ
+                            bq_handler.delete_old_data(store_code, report_month, report_year)
+                            bq_handler.upload_dataframe(df_clean, store_code, report_month, report_year)
+                            
+                            yield _sse(f"     ✔ Cập nhật thành công {len(df_clean)} dòng.")
                             is_success = True
-                        else: yield _sse("     ❌ Không có dữ liệu.")
+                        else: 
+                            bq_handler.delete_old_data(store_code, report_month, report_year)
+                            yield _sse("     ❌ Không có dữ liệu.")
                         break 
                     except Exception as e:
                         if attempt < _safe_int(config.MAX_ATTEMPTS): yield _sse(f"     ⚠ Lỗi: {e}. Thử lại lần {attempt+1}...")
                         else: yield _sse(f"     ❌ Lỗi tải file: {e}")
 
-                # Dọn dẹp Sheet thừa
-                try:
-                    wks = spreadsheet_hd01.worksheets()
-                    for ws in wks:
-                        if ws.title.strip() in {"Trang tính 1", "Sheet1", "Sheet", "Trang tính"} and len(wks) > 1: spreadsheet_hd01.del_worksheet(ws)
-                except Exception: pass
-
-                if is_success: yield _sse(f"FINAL_MESSAGE:{json.dumps({'status': 'success', 'message': f'Cập nhật thành công {store_name}!'})}")
+                if is_success: yield _sse(f"FINAL_MESSAGE:{json.dumps({'status': 'success', 'message': f'Đã cập nhật BigQuery cho {store_name}!'})}")
                 else: yield _sse(f"FINAL_MESSAGE:{json.dumps({'status': 'error', 'message': f'Cập nhật thất bại cho {store_name}.'})}")
                 return
 

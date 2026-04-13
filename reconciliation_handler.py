@@ -5,7 +5,8 @@ import xml.etree.ElementTree as ET
 import re
 from datetime import datetime
 import logging
-import unicodedata  # Thêm thư viện này cho phần chuẩn hóa chuỗi của HD01
+import unicodedata
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -272,9 +273,6 @@ def read_sse_debt_xml(file_stream):
     """
     Đọc file XML 'Sổ đối chiếu công nợ' từ SSE → DataFrame:
       store_display, store_key, sse_ma_khach, sse_ten_khach, sse_phat_sinh_no
-    - Nhận diện header CHXD: cột A rỗng, cột B = mã ĐV, cột C bắt đầu 'CHXD'.
-    - Dòng chi tiết: cột A là STT; lấy 'Mã khách', 'Tên khách', 'Phát sinh nợ'.
-    - Loại bỏ dòng “treo CHXD” (Loại 2) và 'Khách hàng chung'/'Công nợ chung'.
     """
     try:
         xml_bytes = file_stream.read()
@@ -313,14 +311,12 @@ def read_sse_debt_xml(file_stream):
             colB = (row[1] or '').strip()
             colC = (row[2] or '').strip()
 
-            # Header CHXD
             if (colA == '') and colB and colC and _norm_key(colC).startswith('chxd'):
                 cur_store_code = colB
                 cur_store_name_disp = _canon_store_display(colC)
                 cur_store_key = _canon_store_key(colC)
                 continue
 
-            # Dòng chi tiết
             if not colA or not colA.replace('.', '').isdigit() or cur_store_key is None:
                 continue
 
@@ -328,14 +324,12 @@ def read_sse_debt_xml(file_stream):
             sse_name = (row[idx_name] or '').strip()
             ps_raw   = row[idx_psno]
 
-            # Lọc Loại 2: treo vào CHXD
             is_same_code = _codes_equal(sse_code, cur_store_code)
             name_key = _canon_store_key(sse_name)
             is_same_name = (name_key == cur_store_key) or name_key.startswith(cur_store_key) or cur_store_key.startswith(name_key)
             if is_same_code or is_same_name:
                 continue
 
-            # Lọc KH chung
             nm = _norm_key(sse_name)
             if nm in {'khach hang chung','cong no chung','khach hang chung (cong ty)','cong no chung (cong ty)'}:
                 continue
@@ -369,10 +363,6 @@ def read_sse_debt_xml(file_stream):
         return None
 
 def _pos_expand_store_from_tonghop(pos_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Từ sheet 'TongHopCongNo' (cột 'Tên Khách hàng' có thể là CHXD hoặc KH),
-    dựng DataFrame chuẩn có cột 'Cửa hàng' gán theo dòng header CHXD gần nhất.
-    """
     cols_needed = ['Tên Khách hàng', 'Mã khách hàng', 'Phát sinh nợ']
     for c in cols_needed:
         if c not in pos_df.columns:
@@ -381,11 +371,10 @@ def _pos_expand_store_from_tonghop(pos_df: pd.DataFrame) -> pd.DataFrame:
     current_store = None
     for _, row in pos_df.iterrows():
         ten_kh = str(row['Tên Khách hàng']).strip()
-        if _norm_key(ten_kh).startswith('chxd'):  # header cửa hàng
+        if _norm_key(ten_kh).startswith('chxd'):
             current_store = ten_kh
             continue
         if not current_store:
-            # bỏ qua mọi dòng trước khi gặp CHXD đầu tiên
             continue
         records.append({
             'Cửa hàng': current_store,
@@ -397,12 +386,6 @@ def _pos_expand_store_from_tonghop(pos_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
-    """
-    Đối soát công nợ giữa POS (sheet TongHopCongNo) và SSE (XML).
-    - POS: parse theo cấu trúc CHXD header → KH dưới đó; thêm cột 'Cửa hàng'.
-    - Join theo (Cửa hàng, Mã KH); thiếu mã thì fallback (Cửa hàng, Tên KH).
-    """
-    # ===== Parse POS từ 'TongHopCongNo' để thêm cột 'Cửa hàng' =====
     try:
         print(">>> DEBUG[Debt]: Raw POS columns:", list(pos_df.columns))
         pos = _pos_expand_store_from_tonghop(pos_df)
@@ -415,17 +398,14 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
         print(">>> WARNING[Debt]: POS (sau parse) rỗng – có thể sheet TongHopCongNo không đúng cấu trúc.")
         logger.warning("Debt: POS parsed is empty")
 
-    # Chuẩn hoá POS
     pos['Cửa hàng'] = pos['Cửa hàng'].astype(str).map(_canon_store_display)
     pos['store_key'] = pos['Cửa hàng'].map(_canon_store_key)
     pos['Mã khách hàng'] = pos['Mã khách hàng'].fillna('').astype(str).str.strip()
     pos['Phát sinh nợ'] = clean_and_convert_to_numeric(pos['Phát sinh nợ'])
-    # Bỏ 'khách hàng chung'
     pos = pos[~pos['Tên Khách hàng'].astype(str).str.strip().str.lower().isin(
         ['khách hàng chung','khach hang chung','công nợ chung','cong no chung']
     )].copy()
 
-    # ===== Chuẩn hoá SSE =====
     print(">>> DEBUG[Debt]: SSE columns:", list(sse_df.columns))
     sse = sse_df.copy()
     sse['store_display'] = sse['store_display'].astype(str)
@@ -436,7 +416,6 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
 
     results = []
 
-    # ===== Ghép theo từng CHXD (store_key) =====
     all_keys = sorted(set(pos['store_key']).union(set(sse['store_key'])))
     print(">>> DEBUG[Debt]: Tổng số store_key để so khớp:", len(all_keys))
 
@@ -449,7 +428,7 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
 
         display_name = pos_store['Cửa hàng'].iloc[0] if not pos_store.empty else sse_store['store_display'].iloc[0]
 
-        # --- 1) Ghép theo MÃ KH ---
+        # 1) Ghép theo MÃ KH
         pos_by_code = (pos_store[pos_store['Mã khách hàng'] != '']
                        .groupby(['Mã khách hàng','Tên Khách hàng'], as_index=False)['Phát sinh nợ'].sum())
         sse_by_code = (sse_store[sse_store['sse_ma_khach'] != '']
@@ -484,7 +463,7 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
             if pn: matched_pos_names.add(_norm_key(pn))
             if sn: matched_sse_names.add(_norm_key(sn))
 
-        # --- 2) Ghép theo TÊN (khi thiếu mã) ---
+        # 2) Ghép theo TÊN
         pos_no_code = pos_store[(pos_store['Mã khách hàng'] == '') | (pos_store['Mã khách hàng'].str.lower() == 'không tìm thấy mã khách')] \
                                 .groupby('Tên Khách hàng', as_index=False)['Phát sinh nợ'].sum()
         sse_no_code = sse_store[sse_store['sse_ma_khach'] == ''] \
@@ -520,57 +499,124 @@ def reconcile_debt_data(pos_df: pd.DataFrame, sse_df: pd.DataFrame):
     return results
 
 # ==============================================================================
-# PHẦN MỚI BỔ SUNG: ĐỐI SOÁT HÓA ĐƠN (HD01)
+# PHẦN MỚI BỔ SUNG: ĐỐI SOÁT HÓA ĐƠN (HD01) VỚI BIGQUERY
 # ==============================================================================
 
 def _vn_normalize(s: str) -> str:
-    """Chuẩn hóa chuỗi dành riêng cho HD01 (Bỏ dấu, in thường, xóa khoảng trắng)."""
+    """Chuẩn hóa chuỗi (Bỏ dấu, in thường, xóa khoảng trắng thừa)."""
     if pd.isna(s) or s is None:
         return ""
     s = str(s).strip().lower()
+    
+    # Xử lý ký tự 'đ' và 'Đ' của tiếng Việt trước khi dùng unicodedata
+    s = s.replace('đ', 'd').replace('Đ', 'd')
+    
     s = "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")
     return re.sub(r"[\s\._\-]+", " ", s).strip()
 
-def read_tax_excel_file(file_stream, target_month=None, target_year=None) -> pd.DataFrame:
-    """Đọc Bảng kê Thuế (Excel) và quét tìm dòng Header thông minh (Dựa vào mỏ neo 'STT')."""
+def read_tax_excel_file(file_stream, target_month=None, target_year=None, progress_callback=None):
+    """
+    CHIẾN LƯỢC TỐI ƯU RAM: CHỈ ĐỌC CÁC CỘT CẦN THIẾT TỪ FILE 50MB DƯỚI DẠNG TEXT (dtype=str).
+    Sử dụng Thuật toán Định vị Không va chạm + Blacklist để loại bỏ cột Người Bán.
+    """
     try:
-        # Đọc thô 30 dòng đầu để tìm Header (Tăng lên 30 dòng cho an toàn với file Thuế)
-        df_raw = pd.read_excel(file_stream, header=None, nrows=30)
+        if progress_callback: progress_callback(".... Đang tìm kiếm các cột mục tiêu.....")
+        
+        # BƯỚC 1: Đọc nhanh 30 dòng đầu để dò tìm Header
+        df_preview = pd.read_excel(file_stream, header=None, nrows=30)
         header_idx = -1
         
-        for i in range(len(df_raw)):
-            # Lấy giá trị của cột A (cột index 0)
-            col_a_val = str(df_raw.iloc[i, 0]).strip().lower()
-            
-            # Gợi ý của User: Tìm ô có nội dung chính xác là "STT"
-            if col_a_val == 'stt':
+        for i in range(len(df_preview)):
+            row_vals = [_vn_normalize(str(x)) for x in df_preview.iloc[i].values if pd.notna(x)]
+            if 'stt' in row_vals or 'so tt' in row_vals or 'so thu tu' in row_vals:
                 header_idx = i
                 break
                 
-        # Phương án dự phòng: Nếu cột A bị trộn ô (merge cell), thử tìm chữ 'stt' ở bất kỳ ô nào trong dòng
         if header_idx == -1:
-            for i in range(len(df_raw)):
-                row_vals = [str(x).strip().lower() for x in df_raw.iloc[i].values if pd.notna(x)]
-                if 'stt' in row_vals:
-                    header_idx = i
-                    break
-                    
-        if header_idx == -1:
-            raise ValueError("Không nhận diện được cấu trúc Bảng kê Thuế (Không tìm thấy ô 'STT' để xác định dòng tiêu đề).")
+            raise ValueError("Không nhận diện được cấu trúc Bảng kê Thuế (Không tìm thấy dòng tiêu đề chứa 'STT').")
 
-        # Đọc lại file từ dòng Header đã bắt được
-        file_stream.seek(0)
-        tax_df = pd.read_excel(file_stream, header=header_idx)
+        header_row = [_vn_normalize(str(x)) for x in df_preview.iloc[header_idx].values]
         
-        # Lá chắn 3: Kiểm tra tính toàn vẹn của Thời gian
-        col_date = next((c for c in tax_df.columns if 'ngày lập' in str(c).lower()), None)
-        if col_date:
-            tax_df[col_date] = pd.to_datetime(tax_df[col_date], errors='coerce', format='%d/%m/%Y')
-            tax_df = tax_df.dropna(subset=[col_date]) 
+        # TỪ KHÓA MỞ RỘNG
+        kw_mapping = {
+            'KyHieu': ['ky hieu hoa don', 'ky hieu'], 
+            'SoHD': ['so hoa don', 'so hd'],
+            'KhachHang': ['ten nguoi mua', 'ten nguoi mua (trong nuoc)', 'ten don vi', 'ten khach hang', 'nguoi mua', 'khach hang'],
+            'MST': ['ma so thue nguoi mua', 'mst nguoi mua', 'ma so thue', 'mst'],
+            'TienChuaThue': ['tong tien chua thue', 'tien chua thue', 'doanh thu chua thue', 'cong tien hang', 'tien hang'],
+            'TienThue': ['tong tien thue', 'tien thue gtgt', 'thue gtgt', 'tien thue'],
+            'TongTien': ['tong tien thanh toan', 'tong tien', 'tong cong', 'thanh toan'],
+            'NgayLap': ['ngay lap', 'ngay hoa don', 'ngay thang nam lap', 'thoi gian']
+        }
+        
+        # FIX 1: TỪ KHÓA BLACKLIST (Loại bỏ triệt để các cột của Người Bán)
+        blacklist = ['nguoi ban', 'xuat hang']
+        
+        # BƯỚC 2: Định vị Index Không Va Chạm
+        col_indices = {}
+        used_indices = set()
+        
+        for col_key, keywords in kw_mapping.items():
+            # Ưu tiên 1: Quét tìm khớp chính xác 100%
+            for idx, col_name in enumerate(header_row):
+                if idx in used_indices: continue
+                # Chống nhiễu lấy nhầm cột của Người Bán
+                if (col_key in ['MST', 'KhachHang']) and any(b in col_name for b in blacklist):
+                    continue
+                    
+                if col_name in keywords:
+                    col_indices[col_key] = idx
+                    used_indices.add(idx)
+                    break
             
-            unique_months = tax_df[col_date].dt.to_period('M').unique()
+            # Ưu tiên 2: Quét tìm chứa từ khóa
+            if col_key not in col_indices:
+                for idx, col_name in enumerate(header_row):
+                    if idx in used_indices: continue
+                    # Chống nhiễu lấy nhầm cột của Người Bán
+                    if (col_key in ['MST', 'KhachHang']) and any(b in col_name for b in blacklist):
+                        continue
+                        
+                    if any(kw in col_name for kw in keywords):
+                        if col_key == 'KyHieu' and 'mau so' in col_name: continue
+                        if col_key == 'SoHD' and ('thue' in col_name or 'ma so' in col_name): continue
+                        if col_key == 'KhachHang' and ('mst' in col_name or 'ma so' in col_name): continue # Ngăn Khách Hàng cướp nhầm cột của MST
+                        
+                        col_indices[col_key] = idx
+                        used_indices.add(idx)
+                        break
+
+        missing_cols = [k for k in kw_mapping.keys() if k not in col_indices]
+        if missing_cols:
+            print("====== BÁO CÁO LỖI ĐỌC FILE BẢNG KÊ THUẾ ======")
+            print(f"CÁC CỘT TÌM THẤY TRONG FILE: {header_row}")
+            print(f"CÁC THUỘC TÍNH BỊ THIẾU: {missing_cols}")
+            print("===============================================")
+            raise ValueError(f"Không tìm thấy cột tương ứng cho {', '.join(missing_cols)} trong Bảng kê Thuế.")
+
+        sorted_indices = sorted(list(col_indices.values()))
+
+        if progress_callback: progress_callback(".... Đang đọc và hút dữ liệu từ bảng kê của cơ quan thuế....")
+
+        # BƯỚC 3: Đọc file lần 2 (FIX 2: Thêm dtype=str để không bao giờ bị mất số 0 ở đầu)
+        file_stream.seek(0)
+        tax_df = pd.read_excel(file_stream, header=header_idx, usecols=sorted_indices, dtype=str)
+        
+        # BƯỚC 4: Gán lại tên cột chuẩn xác 100%
+        new_col_names = []
+        for original_idx in sorted_indices:
+            found_key = next(k for k, v in col_indices.items() if v == original_idx)
+            new_col_names.append(found_key)
+            
+        tax_df.columns = new_col_names
+
+        # Kiểm tra tính toàn vẹn của Thời gian (Sử dụng dayfirst=True để an toàn với định dạng ngày VN)
+        if 'NgayLap' in tax_df.columns:
+            tax_df['NgayLap'] = pd.to_datetime(tax_df['NgayLap'], errors='coerce', dayfirst=True)
+            tax_df = tax_df.dropna(subset=['NgayLap']) 
+            unique_months = tax_df['NgayLap'].dt.to_period('M').unique()
             if len(unique_months) > 1:
-                raise ValueError(f"Bảng kê thuế chứa dữ liệu của nhiều tháng khác nhau ({', '.join([str(m) for m in unique_months])}). Chương trình chỉ hỗ trợ đối soát 1 tháng!")
+                raise ValueError(f"Bảng kê thuế chứa dữ liệu của nhiều tháng khác nhau ({', '.join([str(m) for m in unique_months])}).")
             
             if target_month and target_year and len(unique_months) == 1:
                 file_m = unique_months[0].month
@@ -578,166 +624,153 @@ def read_tax_excel_file(file_stream, target_month=None, target_year=None) -> pd.
                 if str(file_m) != str(target_month) or str(file_y) != str(target_year):
                     raise ValueError(f"Bảng kê thuế bạn tải lên là của tháng {file_m}/{file_y}, không khớp với lựa chọn ({target_month}/{target_year}).")
 
+        # Chuẩn hóa kiểu dữ liệu trước khi đẩy lên mây
+        for c in ['TienChuaThue', 'TienThue', 'TongTien']:
+            if c in tax_df.columns:
+                tax_df[c] = pd.to_numeric(tax_df[c].astype(str).str.replace(',', '').str.replace(' ', ''), errors='coerce').fillna(0.0)
+                
+        for c in ['KyHieu', 'SoHD', 'KhachHang', 'MST']:
+            if c in tax_df.columns: tax_df[c] = tax_df[c].astype(str).fillna('')
+
+        if progress_callback: progress_callback("..... Đang tạo Chứng minh thư Hóa đơn (HD_ID) .....")
+
+        # Xóa các hậu tố ".0" (nếu có do Excel sinh ra) và tạo ID
+        tx_sohd_str = tax_df['SoHD'].str.replace(r'\.0$', '', regex=True)
+        tax_df['HD_ID'] = tax_df['KyHieu'].str.strip() + "_" + tx_sohd_str.str.replace("'", "").str.strip().str.lstrip('0')
+        tax_df = tax_df[~tax_df['HD_ID'].str.contains('nan', case=False, na=False)]
+
         return tax_df
 
     except Exception as e:
         raise ValueError(f"Lỗi đọc file Thuế: {str(e)}")
 
-def reconcile_invoice_data(dict_pvoil_dfs, tax_df):
+def reconcile_invoice_data_bq(report_month, report_year, tax_df, progress_callback=None):
     """
-    THUẬT TOÁN ĐỐI SOÁT VECTOR HÓA SIÊU TỐC
-    Chỉ giữ lại và trả về các hóa đơn Ngoại lệ (Lệch). Tối ưu RAM cho 600.000+ hóa đơn.
+    THUẬT TOÁN ĐỐI SOÁT ĐÁM MÂY (FULL OUTER JOIN TRÊN BIGQUERY)
     """
-    if not dict_pvoil_dfs or tax_df is None or tax_df.empty:
+    import bq_handler
+    
+    if tax_df is None or tax_df.empty:
         return []
 
-    # 1. Gộp PVOIL
-    pvoil_data = []
-    for store, df in dict_pvoil_dfs.items():
-        if df.empty: continue
-        df_sub = df.copy()
-        if 'Tên CHXD' not in df_sub.columns:
-            df_sub.insert(0, 'Tên CHXD', store)
-        pvoil_data.append(df_sub)
+    client = bq_handler.get_bq_client()
     
-    pvoil_df = pd.concat(pvoil_data, ignore_index=True)
-
-    # ==============================================================================
-    # TUYỆT CHIÊU BỌC THÉP: DÒ TÌM CỘT BẰNG CHUẨN HÓA UNICODE
-    # ==============================================================================
-    def find_col(df_cols, keywords):
-        for kw in keywords:
-            # Chuẩn hóa từ khóa (Ví dụ: "Số hóa đơn" -> "so hoa don")
-            kw_norm = _vn_normalize(kw)
-            for c in df_cols:
-                # Chuẩn hóa tên cột Excel (Triệt tiêu mọi khoảng trắng, dấu enter, lỗi font)
-                c_norm = _vn_normalize(str(c))
-                if kw_norm in c_norm: 
-                    return c
-        return None
-
-    # TÌM CỘT PVOIL (Dùng từ khóa bạn cung cấp)
-    pv_kyhieu = find_col(pvoil_df.columns, ['ký hiệu', 'ky hieu'])
-    pv_sohd = find_col(pvoil_df.columns, ['số hđ', 'số hd', 'so hd'])
-    pv_khach = find_col(pvoil_df.columns, ['tên khách hàng', 'khach hang'])
-    pv_mst = find_col(pvoil_df.columns, ['mã số thuế', 'mst'])
-    pv_truocthue = find_col(pvoil_df.columns, ['thành tiền (chưa thuế)', 'chua thue'])
-    pv_thue = find_col(pvoil_df.columns, ['tiền thuế', 'thuế gtgt'])
-    pv_tong = find_col(pvoil_df.columns, ['tổng tiền thanh toán', 'tổng tiền'])
-
-    # TÌM CỘT BẢNG KÊ THUẾ (Dùng chính xác từ khóa bạn cung cấp)
-    tx_kyhieu = find_col(tax_df.columns, ['ký hiệu hóa đơn', 'ky hieu hoa don', 'ký hiệu'])
-    tx_sohd = find_col(tax_df.columns, ['số hóa đơn', 'so hoa don', 'số hđ'])
-    tx_khach = find_col(tax_df.columns, ['tên người mua', 'người mua', 'tên người nhận'])
-    tx_mst = find_col(tax_df.columns, ['mst người mua', 'mã số thuế', 'mst'])
-    tx_truocthue = find_col(tax_df.columns, ['tổng tiền chưa thuế'])
-    tx_thue = find_col(tax_df.columns, ['tổng tiền thuế'])
-    tx_tong = find_col(tax_df.columns, ['tổng tiền thanh toán'])
-
-    # KIỂM TRA BẢO MẬT & IN LOG NẾU LỖI
-    if not all([pv_kyhieu, pv_sohd, tx_kyhieu, tx_sohd]):
-        # Bẫy lỗi: In toàn bộ cột đọc được ra màn hình đen để bắt tận tay
-        print("====== DEBUG LỖI TÌM CỘT ======")
-        print(f"CỘT PVOIL HIỆN CÓ: {list(pvoil_df.columns)}")
-        print(f"CỘT THUẾ HIỆN CÓ: {list(tax_df.columns)}")
-        print("===============================")
-        raise ValueError("Lỗi cấu trúc: Không tìm thấy cột Ký hiệu / Số hóa đơn để so khớp. Vui lòng xem log trên cửa sổ Python (Terminal).")
-
-    # 2. ĐỒNG BỘ HÓA TÊN CỘT ĐỂ TRÁNH LỖI JOIN PANDAS
-    pv_rename = {pv_kyhieu: 'KyHieu', pv_sohd: 'SoHD', pv_khach: 'KhachHang', pv_mst: 'MST', pv_truocthue: 'TienChuaThue', pv_thue: 'TienThue', pv_tong: 'TongTien'}
-    tx_rename = {tx_kyhieu: 'KyHieu', tx_sohd: 'SoHD', tx_khach: 'KhachHang', tx_mst: 'MST', tx_truocthue: 'TienChuaThue', tx_thue: 'TienThue', tx_tong: 'TongTien'}
+    # 1. Tạo Tên Bảng Tạm ngẫu nhiên
+    temp_table_id = f"{client.project}.pvoil_data.Temp_Tax_Data_{uuid.uuid4().hex[:8]}"
     
-    pvoil_df = pvoil_df.rename(columns={k: v for k, v in pv_rename.items() if k})
-    tax_df = tax_df.rename(columns={k: v for k, v in tx_rename.items() if k})
-
-    # 3. ÉP CÂN DỮ LIỆU: Chỉ giữ lại các cột chuẩn hóa
-    std_cols = ['KyHieu', 'SoHD', 'KhachHang', 'MST', 'TienChuaThue', 'TienThue', 'TongTien']
-    pvoil_df = pvoil_df[['Tên CHXD'] + [c for c in std_cols if c in pvoil_df.columns]].copy()
-    tax_df = tax_df[[c for c in std_cols if c in tax_df.columns]].copy()
-
-    # 4. TẠO "CHỨNG MINH THƯ" (HD_ID)
-    pvoil_df['HD_ID'] = pvoil_df['KyHieu'].astype(str).str.strip() + "_" + \
-                        pvoil_df['SoHD'].astype(str).str.replace("'", "").str.strip().str.lstrip('0')
-    
-    tx_sohd_str = tax_df['SoHD'].astype(str).str.replace(r'\.0$', '', regex=True)
-    tax_df['HD_ID'] = tax_df['KyHieu'].astype(str).str.strip() + "_" + \
-                      tx_sohd_str.str.replace("'", "").str.strip().str.lstrip('0')
-
-    pvoil_df = pvoil_df[~pvoil_df['HD_ID'].str.contains('nan', case=False, na=False)]
-    tax_df = tax_df[~tax_df['HD_ID'].str.contains('nan', case=False, na=False)]
-
-    # 5. CHUẨN HÓA CHUỖI & SỐ TẬP TRUNG
-    if 'KhachHang' in pvoil_df.columns: pvoil_df['_norm_name'] = pvoil_df['KhachHang'].astype(str).apply(_vn_normalize)
-    if 'KhachHang' in tax_df.columns: tax_df['_norm_name'] = tax_df['KhachHang'].astype(str).apply(_vn_normalize)
-    
-    if 'MST' in pvoil_df.columns: pvoil_df['_norm_mst'] = pvoil_df['MST'].astype(str).str.replace("'", "").str.replace(" ", "").str.lower()
-    if 'MST' in tax_df.columns: tax_df['_norm_mst'] = tax_df['MST'].astype(str).str.replace("'", "").str.replace(" ", "").str.lower()
-
-    money_cols = ['TienChuaThue', 'TienThue', 'TongTien']
-    for df in [pvoil_df, tax_df]:
-        for c in money_cols:
-            if c in df.columns: df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', '').str.replace(' ', ''), errors='coerce').fillna(0)
-
-    # 6. FULL OUTER JOIN TOÀN BỘ DỮ LIỆU
-    merged_df = pd.merge(pvoil_df, tax_df, on='HD_ID', how='outer', suffixes=('_pv', '_tx'))
-
-    # 7. VECTOR HÓA: TÌM KIẾM ĐIỂM LỆCH
-    m_pv_missing = merged_df['KyHieu_pv'].isna()
-    m_tx_missing = merged_df['KyHieu_tx'].isna()
-    
-    m_name_diff = pd.Series(False, index=merged_df.index)
-    if '_norm_name_pv' in merged_df.columns and '_norm_name_tx' in merged_df.columns:
-        m_name_diff = merged_df['_norm_name_pv'] != merged_df['_norm_name_tx']
+    try:
+        if progress_callback: progress_callback("..... Đang tải dữ liệu bảng kê thuế lên BigQuery.....")
         
-    m_mst_diff = pd.Series(False, index=merged_df.index)
-    if '_norm_mst_pv' in merged_df.columns and '_norm_mst_tx' in merged_df.columns:
-        m_mst_diff = merged_df['_norm_mst_pv'].str.replace('nan', '') != merged_df['_norm_mst_tx'].str.replace('nan', '')
-    
-    m_money_diff = pd.Series(False, index=merged_df.index)
-    if 'TienChuaThue_pv' in merged_df.columns and 'TienChuaThue_tx' in merged_df.columns:
-        m_money_diff |= (merged_df['TienChuaThue_pv'] - merged_df['TienChuaThue_tx']).abs() >= 1.0
-    if 'TienThue_pv' in merged_df.columns and 'TienThue_tx' in merged_df.columns:
-        m_money_diff |= (merged_df['TienThue_pv'] - merged_df['TienThue_tx']).abs() >= 1.0
-    if 'TongTien_pv' in merged_df.columns and 'TongTien_tx' in merged_df.columns:
-        m_money_diff |= (merged_df['TongTien_pv'] - merged_df['TongTien_tx']).abs() >= 1.0
+        # 2. Bơm file Thuế (đã rút gọn chỉ còn vài MB) lên BigQuery
+        job_config = bq_handler.bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
+        job = client.load_table_from_dataframe(tax_df, temp_table_id, job_config=job_config)
+        job.result() # Đợi upload xong
 
-    m_any_mismatch = m_pv_missing | m_tx_missing | m_name_diff | m_mst_diff | m_money_diff
-    mismatched_df = merged_df[m_any_mismatch].copy()
+        if progress_callback: progress_callback("...... Đang chờ kết quả đối soát từ BigQuery (So khớp chéo)......")
+        
+        # 3. Kích hoạt Lệnh SQL So Khớp Chéo
+        sql_query = f"""
+        WITH PVOIL_Data AS (
+            SELECT 
+                Ten_CHXD,
+                Ky_Hieu AS KyHieu,
+                So_HD AS SoHD,
+                Ten_Khach_Hang AS KhachHang,
+                Ma_So_Thue AS MST,
+                Tien_Chua_Thue AS TienChuaThue,
+                Tien_Thue AS TienThue,
+                Tong_Tien AS TongTien,
+                CONCAT(TRIM(Ky_Hieu), '_', LTRIM(TRIM(So_HD), '0')) AS HD_ID
+            FROM `{client.project}.pvoil_data.HD01_Master_Data`
+            WHERE Thang_Bao_Cao = {int(report_month)} AND Nam_Bao_Cao = {int(report_year)}
+            QUALIFY ROW_NUMBER() OVER(PARTITION BY Ma_CHXD, Ky_Hieu, So_HD ORDER BY Ngay_Hoa_Don DESC) = 1
+        ),
+        TAX_Data AS (
+            SELECT 
+                KyHieu,
+                SoHD,
+                KhachHang,
+                MST,
+                TienChuaThue,
+                TienThue,
+                TongTien,
+                HD_ID
+            FROM `{temp_table_id}`
+        )
+        SELECT 
+            COALESCE(p.Ten_CHXD, 'Bảng kê Thuế') AS chxd_name,
+            COALESCE(p.HD_ID, t.HD_ID) AS invoice_id,
+            p.TongTien AS pos_value,
+            t.TongTien AS sse_value,
+            p.KyHieu AS KyHieu_pv, t.KyHieu AS KyHieu_tx,
+            p.KhachHang AS KhachHang_pv, t.KhachHang AS KhachHang_tx,
+            p.MST AS MST_pv, t.MST AS MST_tx,
+            p.TienChuaThue AS TienChuaThue_pv, t.TienChuaThue AS TienChuaThue_tx,
+            p.TienThue AS TienThue_pv, t.TienThue AS TienThue_tx,
+            p.TongTien AS TongTien_pv, t.TongTien AS TongTien_tx
+        FROM PVOIL_Data p
+        FULL OUTER JOIN TAX_Data t ON p.HD_ID = t.HD_ID
+        WHERE 
+            p.HD_ID IS NULL -- Thiếu trên PVOIL
+            OR t.HD_ID IS NULL -- Thiếu trên Thuế
+            OR ABS(COALESCE(p.TongTien, 0) - COALESCE(t.TongTien, 0)) >= 1.0
+            OR ABS(COALESCE(p.TienChuaThue, 0) - COALESCE(t.TienChuaThue, 0)) >= 1.0
+            OR ABS(COALESCE(p.TienThue, 0) - COALESCE(t.TienThue, 0)) >= 1.0
+            OR REPLACE(LOWER(IFNULL(p.MST, '')), ' ', '') != REPLACE(LOWER(IFNULL(t.MST, '')), ' ', '')
+            OR LOWER(TRIM(IFNULL(p.KhachHang, ''))) != LOWER(TRIM(IFNULL(t.KhachHang, '')))
+        """
 
-    # 8. XUẤT KẾT QUẢ NGOẠI LỆ (Nhanh như chớp)
+        mismatched_df = client.query(sql_query).to_dataframe()
+        
+        if progress_callback: progress_callback("...... Đang nhận kết quả từ BigQuery.........")
+        
+    finally:
+        # 5. DỌN DẸP CHIẾN TRƯỜNG
+        client.delete_table(temp_table_id, not_found_ok=True)
+
+    # 6. XỬ LÝ KẾT QUẢ
     results = []
     for _, row in mismatched_df.iterrows():
-        invoice_id = row['HD_ID']
-        store_name = row['Tên CHXD'] if pd.notna(row.get('Tên CHXD')) else 'Bảng kê Thuế'
-        
-        pv_val_tong = row['TongTien_pv'] if pd.notna(row.get('TongTien_pv')) else 0.0
-        tx_val_tong = row['TongTien_tx'] if pd.notna(row.get('TongTien_tx')) else 0.0
+        pv_val_tong = row['pos_value'] if pd.notna(row.get('pos_value')) else 0.0
+        tx_val_tong = row['sse_value'] if pd.notna(row.get('sse_value')) else 0.0
 
         status_msgs = []
+        is_missing = False
         if pd.isna(row.get('KyHieu_pv')):
-            status_msgs.append("❗ Chỉ có trên Bảng kê Thuế (Không có trên PVOIL)")
+            status_msgs.append("❗ Chỉ có trên Bảng kê Thuế (Không có trên bảng kê POS)")
+            is_missing = True
         elif pd.isna(row.get('KyHieu_tx')):
-            status_msgs.append("❗ Chỉ có trên GSheet PVOIL (Không có trên Thuế)")
+            status_msgs.append("❗ Chỉ có trên Bảng kê POS (Không có trên Thuế)")
+            is_missing = True
         else:
-            if '_norm_name_pv' in row and '_norm_name_tx' in row and row['_norm_name_pv'] != row['_norm_name_tx']:
-                status_msgs.append(f"Khác Tên KH (PV: '{row.get('KhachHang_pv', '')}' vs Thuế: '{row.get('KhachHang_tx', '')}')")
+            name_pv = _vn_normalize(str(row.get('KhachHang_pv', '')))
+            name_tx = _vn_normalize(str(row.get('KhachHang_tx', '')))
+            mst_pv = str(row.get('MST_pv', '')).replace('nan', '').replace(' ', '').lower()
+            mst_tx = str(row.get('MST_tx', '')).replace('nan', '').replace(' ', '').lower()
             
-            if '_norm_mst_pv' in row and '_norm_mst_tx' in row:
-                mst_pv = str(row['_norm_mst_pv']).replace('nan', '')
-                mst_tx = str(row['_norm_mst_tx']).replace('nan', '')
-                if mst_pv != mst_tx:
-                    status_msgs.append(f"Khác MST (PV: '{row.get('MST_pv', '')}' vs Thuế: '{row.get('MST_tx', '')}')")
-            
-            if 'TienChuaThue_pv' in row and 'TienChuaThue_tx' in row and abs(row['TienChuaThue_pv'] - row['TienChuaThue_tx']) >= 1.0:
+            is_money_diff = False
+            if abs(row.get('TienChuaThue_pv', 0) - row.get('TienChuaThue_tx', 0)) >= 1.0:
                 status_msgs.append("Lệch Tiền Chưa Thuế")
-            if 'TienThue_pv' in row and 'TienThue_tx' in row and abs(row['TienThue_pv'] - row['TienThue_tx']) >= 1.0:
+                is_money_diff = True
+            if abs(row.get('TienThue_pv', 0) - row.get('TienThue_tx', 0)) >= 1.0:
                 status_msgs.append("Lệch Tiền Thuế")
-            if 'TongTien_pv' in row and 'TongTien_tx' in row and abs(row['TongTien_pv'] - row['TongTien_tx']) >= 1.0:
+                is_money_diff = True
+            if abs(row.get('TongTien_pv', 0) - row.get('TongTien_tx', 0)) >= 1.0:
                 status_msgs.append(f"Lệch Tổng Tiền (PV: {pv_val_tong:,.0f} vs Thuế: {tx_val_tong:,.0f})")
+                is_money_diff = True
+                
+            is_mst_diff = (mst_pv != mst_tx)
+            if is_mst_diff:
+                status_msgs.append(f"Khác MST (PV: '{row.get('MST_pv', '')}' vs Thuế: '{row.get('MST_tx', '')}')")
+                
+            if name_pv != name_tx:
+                status_msgs.append(f"Khác Tên KH (PV: '{row.get('KhachHang_pv', '')}' vs Thuế: '{row.get('KhachHang_tx', '')}')")
+            elif not is_money_diff and not is_mst_diff:
+                continue 
 
         results.append({
-            'chxd_name': store_name,
-            'invoice_id': str(invoice_id).replace('_', ' '),
+            'chxd_name': row['chxd_name'],
+            'invoice_id': str(row['invoice_id']).replace('_', ' '),
             'pos_value': pv_val_tong,
             'sse_value': tx_val_tong,
             'is_match': False,

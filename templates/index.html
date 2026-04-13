@@ -131,6 +131,12 @@
                         </button>
                     </div>
                 </form>
+
+                <!-- BỔ SUNG MÀN HÌNH ĐEN LOG CHO TAB ĐỐI SOÁT -->
+                <div id="reconcile-log-container" class="hidden bg-gray-900 text-white text-sm rounded-md p-4 overflow-y-auto border-4 border-gray-700 h-48 mb-4">
+                    <div id="reconcile-log-content"></div>
+                </div>
+
                 <div id="reconciliation-results" class="hidden"></div>
             </div>
         </div>
@@ -203,7 +209,7 @@
                 }
             });
 
-            // --- BÁO CÁO & TỔNG HỢP (Giữ nguyên logic cũ) ---
+            // --- BÁO CÁO & TỔNG HỢP ---
             const downloadBtn = document.getElementById('download-report-btn');
             const reportBtnText = document.getElementById('btn-text-report');
             const reportBtnLoader = document.getElementById('btn-loader-report');
@@ -300,18 +306,27 @@
                 }
             });
 
-            // --- TÍNH NĂNG ĐỐI SOÁT (Đã fix lỗi sập Browser khi data quá lớn) ---
+            // --- TÍNH NĂNG ĐỐI SOÁT CHUYÊN SÂU ---
             const reconcileForm = document.getElementById('reconcile-form');
             const reconcileBtn = document.getElementById('reconcile-btn');
             const reconcileBtnText = document.getElementById('btn-text-reconcile');
             const reconcileBtnLoader = document.getElementById('btn-loader-reconcile');
             const resultsContainer = document.getElementById('reconciliation-results');
+            
+            // Lấy DOM của Màn hình đen Log mới thêm
+            const recLogContainer = document.getElementById('reconcile-log-container');
+            const recLogContent = document.getElementById('reconcile-log-content');
 
             reconcileForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
-                setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, true, 'Đang tiến hành Đối soát (Có thể mất vài phút)...');
+                setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, true, 'Đang tiến hành Đối soát...');
                 hideMessage();
                 resultsContainer.classList.add('hidden');
+                
+                // Mở màn hình đen Log
+                recLogContainer.classList.remove('hidden');
+                recLogContent.innerHTML = '';
+                
                 reconciliationResultPayload = {};
 
                 const formData = new FormData(reconcileForm);
@@ -320,32 +335,71 @@
                 try {
                     const response = await fetch('/reconcile', { method: 'POST', body: formData });
                     
-                    // SỬA LỖI TẠI ĐÂY: Bắt JS đọc dữ liệu JSON trước, không hoảng loạn khi gặp lỗi 400
-                    const result = await response.json(); 
-                    
                     if (!response.ok) {
-                        // Nếu Python có gửi kèm lời nhắn chi tiết, hãy lấy lời nhắn đó. Nếu không mới báo lỗi 400 chung chung.
-                        throw new Error(result.message || `Máy chủ trả về mã lỗi: ${response.status}`);
+                        const contentType = response.headers.get("content-type");
+                        if (contentType && contentType.indexOf("application/json") !== -1) {
+                            const errResult = await response.json();
+                            throw new Error(errResult.message);
+                        } else {
+                            throw new Error(`Máy chủ trả về mã lỗi: ${response.status}`);
+                        }
                     }
 
-                    if (result.status === 'report_not_found') {
-                        if (confirm(result.message + "\nBạn có muốn chuyển sang tải báo cáo POS ngay bây giờ không?")) {
-                            document.getElementById('tab-baocao').click();
-                            document.getElementById('report-date').value = formData.get('reconcile_date');
-                        }
-                    } else if (result.status === 'success') {
-                        // Lưu toàn bộ data để chuẩn bị cho nút Tải Excel
-                        reconciliationResultPayload = { data: result.data, reconcile_type: result.reconcile_type };
+                    // Thuật toán Đọc luồng nhỏ giọt (Streaming Reader)
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder("utf-8");
+                    let buffer = "";
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
                         
-                        // Render bảng kết quả (Có giới hạn chống tràn RAM)
-                        renderReconciliationResults(result.data, result.reconcile_type);
-                        showMessage({ status: 'success', message: 'Đối soát hoàn tất!' });
-                    } else {
-                        showMessage(result);
+                        buffer += decoder.decode(value, { stream: true });
+                        let lines = buffer.split('\n');
+                        buffer = lines.pop(); // Giữ lại dòng cuối cùng nếu nó bị cắt ngang
+
+                        for (let line of lines) {
+                            if (line.trim() === '') continue;
+                            
+                            let result;
+                            try { 
+                                result = JSON.parse(line); 
+                            } catch(e) { 
+                                console.error("Parse JSON error:", e, line); 
+                                continue; 
+                            }
+
+                            // Phân loại Tin nhắn từ Server
+                            if (result.type === 'log') {
+                                recLogContent.innerHTML += result.message + '<br>';
+                                recLogContainer.scrollTop = recLogContainer.scrollHeight;
+                            } 
+                            else if (result.type === 'result') {
+                                // Đã nhận kết quả cuối cùng -> Xử lý
+                                if (result.status === 'report_not_found') {
+                                    if (confirm(result.message + "\nBạn có muốn chuyển sang tải báo cáo POS ngay bây giờ không?")) {
+                                        document.getElementById('tab-baocao').click();
+                                        if (rType === 'HoaDon') {
+                                            document.getElementById('report-type').value = 'HD01';
+                                            document.getElementById('report-type').dispatchEvent(new Event('change'));
+                                            document.getElementById('report-month').value = formData.get('reconcile_month');
+                                            document.getElementById('report-year').value = formData.get('reconcile_year');
+                                        } else {
+                                            document.getElementById('report-date').value = formData.get('reconcile_date');
+                                        }
+                                    }
+                                } else if (result.status === 'success') {
+                                    reconciliationResultPayload = { data: result.data, reconcile_type: result.reconcile_type };
+                                    renderReconciliationResults(result.data, result.reconcile_type);
+                                    showMessage({ status: 'success', message: 'Đối soát hoàn tất!' });
+                                } else {
+                                    showMessage({ status: 'error', message: result.message });
+                                }
+                            }
+                        }
                     }
                 } catch (error) {
                     console.error("Chi tiết lỗi JS hoặc Mạng:", error);
-                    // Thông báo lỗi thật để dễ traceback thay vì 'Lỗi server' chung chung
                     showMessage({ status: 'error', message: `Lỗi kết nối hoặc xử lý giao diện: ${error.message}` });
                 } finally {
                     setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, false, 'Thực hiện Đối soát');

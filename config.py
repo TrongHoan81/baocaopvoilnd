@@ -37,7 +37,11 @@ PVOIL_TENANT_CODE = "namdinh"
 GOOGLE_DRIVE_ROOT_FOLDER_ID = '1HNq_IQA9f-_fSQbmqRgpTkpAyjoP0aZM'
 CLIENT_SECRET_FILE = 'client_secret.json'
 TOKEN_FILE = 'token.json'
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets', 
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/bigquery'  # Đã bổ sung quyền truy cập BigQuery
+]
 
 # --- Cấu hình Logic ---
 MAX_ATTEMPTS = 3

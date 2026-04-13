@@ -97,7 +97,8 @@ def process_hd01(df: pd.DataFrame, store_name: str) -> pd.DataFrame:
         if standardized_name == 'Tên CHXD': continue
         if original_name and original_name in df_data.columns:
             if standardized_name in ['Số HĐ', 'Mã số thuế', 'Mã tra cứu', 'Số GD']:
-                df_final[standardized_name] = df_data[original_name].apply(lambda x: f"'{str(x).strip()}" if pd.notna(x) and str(x).strip() else "")
+                # ĐÃ SỬA: Loại bỏ dấu nháy đơn (') ở đầu vì BigQuery đã quản lý kiểu dữ liệu STRING rất tốt
+                df_final[standardized_name] = df_data[original_name].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() else "")
             else:
                 df_final[standardized_name] = df_data[original_name]
         else:
@@ -266,6 +267,105 @@ def aggregate_hd01_data(dict_dfs: dict) -> io.BytesIO:
                 cell = worksheet.cell(row=row, column=col_idx)
                 if isinstance(cell.value, (int, float)) and cell.value != "":
                     cell.number_format = '#,##0'
+
+    output.seek(0)
+    return output
+
+def generate_excel_from_bq(agg_prod: pd.DataFrame, agg_status: pd.DataFrame) -> io.BytesIO:
+    """
+    Hàm này thay thế nửa sau của aggregate_hd01_data cũ. 
+    Nó nhận kết quả tính sẵn từ SQL BigQuery và tiến hành vẽ bảng Excel đa tầng.
+    """
+    if agg_prod.empty: return None
+
+    target_products = ['Xăng RON95 Mức 3', 'Xăng E5 RON92 Mức 2', 'Dầu Điêzen 0,001S Mức 5', 'Dầu Điêzen 0,05S Mức 2']
+    products = target_products + ['Mặt hàng khác']
+    statuses = ['Hoàn thành', 'Thay thế', 'Điều chỉnh tăng', 'Điều chỉnh giảm', 'Bị thay thế', 'Bị điều chỉnh']
+    
+    tuples = [('STT', ''), ('Đơn vị', '')]
+    for m in ['Tổng số lượng hóa đơn', 'Tổng số tiền chưa thuế', 'Tiền thuế', 'Tổng thanh toán', 'Giao dịch chuyển thẳng', 'Giao dịch nội bộ']:
+        for p in products: tuples.append((m, p))
+    for s in statuses: tuples.append(('Hóa đơn', s))
+
+    stores = sorted(list(set(agg_prod['Ten_CHXD'].dropna().unique().tolist() + agg_status['Ten_CHXD'].dropna().unique().tolist())))
+    rows = []
+
+    for store in stores:
+        row_data = {('STT', ''): len(rows) + 1, ('Đơn vị', ''): store}
+        store_prod = agg_prod[agg_prod['Ten_CHXD'] == store]
+        store_status = agg_status[agg_status['Ten_CHXD'] == store]
+        
+        for p in products:
+            p_data = store_prod[store_prod['Nhom_Hang'] == p]
+            if not p_data.empty:
+                row_data[('Tổng số lượng hóa đơn', p)] = p_data['So_Luong_Dong'].iloc[0]
+                row_data[('Tổng số tiền chưa thuế', p)] = p_data['Tien_Chua_Thue'].iloc[0]
+                row_data[('Tiền thuế', p)] = p_data['Tien_Thue'].iloc[0]
+                row_data[('Tổng thanh toán', p)] = p_data['Tong_Thanh_Toan'].iloc[0]
+                row_data[('Giao dịch chuyển thẳng', p)] = p_data['SL_ChuyenThang'].iloc[0]
+                row_data[('Giao dịch nội bộ', p)] = p_data['SL_NoiBo'].iloc[0]
+            else:
+                row_data[('Tổng số lượng hóa đơn', p)] = 0
+                row_data[('Tổng số tiền chưa thuế', p)] = 0
+                row_data[('Tiền thuế', p)] = 0
+                row_data[('Tổng thanh toán', p)] = 0
+                row_data[('Giao dịch chuyển thẳng', p)] = 0
+                row_data[('Giao dịch nội bộ', p)] = 0
+                
+        for status in statuses:
+            s_data = store_status[store_status['Trang_Thai_Lower'] == status.lower()]
+            row_data[('Hóa đơn', status)] = s_data['So_Luong_Trang_Thai'].iloc[0] if not s_data.empty else 0
+            
+        rows.append(row_data)
+
+    flat_data = []
+    for r in rows:
+        flat_row = []
+        for t in tuples:
+            val = r.get(t, "")
+            if val == 0: val = ""
+            flat_row.append(val)
+        flat_data.append(flat_row)
+
+    result_df = pd.DataFrame(flat_data)
+    output = io.BytesIO()
+    
+    # Mượn lại chính hàm vẽ khung Excel siêu việt của bạn
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        result_df.to_excel(writer, index=False, header=False, startrow=2, sheet_name='Tổng hợp') 
+        worksheet = writer.sheets['Tổng hợp']
+        
+        header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+        header_font = Font(bold=True)
+        center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        for col_idx, (level1, level2) in enumerate(tuples, start=1):
+            cell1 = worksheet.cell(row=1, column=col_idx, value=level1)
+            cell2 = worksheet.cell(row=2, column=col_idx, value=level2)
+            cell1.fill = cell2.fill = header_fill
+            cell1.font = cell2.font = header_font
+            cell1.alignment = cell2.alignment = center_align
+
+        worksheet.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+        worksheet.merge_cells(start_row=1, start_column=2, end_row=2, end_column=2)
+
+        start_col = 3
+        for _ in range(6): # 6 nhóm metrics
+            end_col = start_col + len(products) - 1
+            worksheet.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+            start_col = end_col + 1
+            
+        end_col = start_col + len(statuses) - 1
+        worksheet.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+
+        worksheet.column_dimensions['A'].width = 5
+        worksheet.column_dimensions['B'].width = 25
+        for col_idx in range(3, len(tuples) + 1): worksheet.column_dimensions[get_column_letter(col_idx)].width = 15
+            
+        for row in range(3, worksheet.max_row + 1):
+            for col_idx in range(3, len(tuples) + 1):
+                cell = worksheet.cell(row=row, column=col_idx)
+                if isinstance(cell.value, (int, float)) and cell.value != "": cell.number_format = '#,##0'
 
     output.seek(0)
     return output

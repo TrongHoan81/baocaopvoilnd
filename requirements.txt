@@ -10,3 +10,6 @@ lxml
 gunicorn
 pytz
 python-dotenv
+google-cloud-bigquery
+pandas-gbq
+db-dtypes
