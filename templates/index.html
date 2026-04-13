@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PVOIL Nam Định - Công cụ Tự động hóa</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         .tab-button.active { border-color: #4f46e5; background-color: #eef2ff; color: #4f46e5; font-weight: 600; }
         .loader { border: 4px solid #f3f3f3; border-radius: 50%; border-top: 4px solid #ffffff; width: 20px; height: 20px; animation: spin 1s linear infinite; }
@@ -86,10 +87,17 @@
                 <div class="bg-blue-50 border-l-4 border-blue-400 p-4">
                     <p class="text-sm text-blue-700">Tính năng này sẽ gộp toàn bộ các tab cửa hàng trong tháng và tạo ra một Bảng Thống Kê Hóa Đơn Bán Hàng dạng Excel đa tầng chuẩn mực.</p>
                 </div>
-                <div>
+                
+                <!-- NÚT BẤM CHIA LÀM 2 CỘT: TỔNG HỢP VÀ DỮ LIỆU THÔ -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <button id="aggregate-btn" type="button" class="w-full flex items-center justify-center py-3 px-4 border rounded-md shadow-sm text-lg font-medium text-white bg-purple-600 hover:bg-purple-700">
                         <span id="btn-text-aggregate">Kiểm tra & Tải Excel Tổng hợp</span>
                         <div id="btn-loader-aggregate" class="loader hidden ml-3"></div>
+                    </button>
+                    
+                    <button id="export-raw-btn" type="button" class="w-full flex items-center justify-center py-3 px-4 border rounded-md shadow-sm text-lg font-medium text-white bg-gray-600 hover:bg-gray-700">
+                        <i class="fas fa-file-download mr-2"></i>
+                        <span>Tải Dữ liệu thô (Raw)</span>
                     </button>
                 </div>
             </div>
@@ -132,7 +140,7 @@
                     </div>
                 </form>
 
-                <!-- BỔ SUNG MÀN HÌNH ĐEN LOG CHO TAB ĐỐI SOÁT -->
+                <!-- MÀN HÌNH ĐEN LOG CHO TAB ĐỐI SOÁT -->
                 <div id="reconcile-log-container" class="hidden bg-gray-900 text-white text-sm rounded-md p-4 overflow-y-auto border-4 border-gray-700 h-48 mb-4">
                     <div id="reconcile-log-content"></div>
                 </div>
@@ -200,7 +208,7 @@
             reconcileTypeSelect.addEventListener('change', (e) => {
                 if(e.target.value === 'HoaDon') {
                     reconcileDateContainer.classList.add('hidden');
-                    reconcileMonthContainer.classList.remove('hidden');
+                    reconcileMonthContainer.classList.add('hidden');
                     reconcileDateInput.removeAttribute('required');
                 } else {
                     reconcileDateContainer.classList.remove('hidden');
@@ -306,14 +314,23 @@
                 }
             });
 
+            // LOGIC NÚT TẢI DỮ LIỆU THÔ (RAW DATA)
+            const exportRawBtn = document.getElementById('export-raw-btn');
+            exportRawBtn.addEventListener('click', () => {
+                const month = document.getElementById('aggregate-month').value;
+                const year = document.getElementById('aggregate-year').value;
+                const stationCode = document.getElementById('station-code').value; 
+                
+                // Chuyển hướng để trình duyệt tải file
+                window.location.href = `/export_raw_hd01?month=${month}&year=${year}&store_code=${stationCode}`;
+            });
+
             // --- TÍNH NĂNG ĐỐI SOÁT CHUYÊN SÂU ---
             const reconcileForm = document.getElementById('reconcile-form');
             const reconcileBtn = document.getElementById('reconcile-btn');
             const reconcileBtnText = document.getElementById('btn-text-reconcile');
             const reconcileBtnLoader = document.getElementById('btn-loader-reconcile');
             const resultsContainer = document.getElementById('reconciliation-results');
-            
-            // Lấy DOM của Màn hình đen Log mới thêm
             const recLogContainer = document.getElementById('reconcile-log-container');
             const recLogContent = document.getElementById('reconcile-log-content');
 
@@ -322,11 +339,8 @@
                 setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, true, 'Đang tiến hành Đối soát...');
                 hideMessage();
                 resultsContainer.classList.add('hidden');
-                
-                // Mở màn hình đen Log
                 recLogContainer.classList.remove('hidden');
                 recLogContent.innerHTML = '';
-                
                 reconciliationResultPayload = {};
 
                 const formData = new FormData(reconcileForm);
@@ -334,7 +348,6 @@
 
                 try {
                     const response = await fetch('/reconcile', { method: 'POST', body: formData });
-                    
                     if (!response.ok) {
                         const contentType = response.headers.get("content-type");
                         if (contentType && contentType.indexOf("application/json") !== -1) {
@@ -345,7 +358,6 @@
                         }
                     }
 
-                    // Thuật toán Đọc luồng nhỏ giọt (Streaming Reader)
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder("utf-8");
                     let buffer = "";
@@ -353,37 +365,27 @@
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
-                        
                         buffer += decoder.decode(value, { stream: true });
                         let lines = buffer.split('\n');
-                        buffer = lines.pop(); // Giữ lại dòng cuối cùng nếu nó bị cắt ngang
+                        buffer = lines.pop();
 
                         for (let line of lines) {
                             if (line.trim() === '') continue;
-                            
                             let result;
-                            try { 
-                                result = JSON.parse(line); 
-                            } catch(e) { 
-                                console.error("Parse JSON error:", e, line); 
-                                continue; 
-                            }
+                            try { result = JSON.parse(line); } catch(e) { continue; }
 
-                            // Phân loại Tin nhắn từ Server
                             if (result.type === 'log') {
                                 recLogContent.innerHTML += result.message + '<br>';
                                 recLogContainer.scrollTop = recLogContainer.scrollHeight;
-                            } 
-                            else if (result.type === 'result') {
-                                // Đã nhận kết quả cuối cùng -> Xử lý
+                            } else if (result.type === 'result') {
                                 if (result.status === 'report_not_found') {
                                     if (confirm(result.message + "\nBạn có muốn chuyển sang tải báo cáo POS ngay bây giờ không?")) {
                                         document.getElementById('tab-baocao').click();
                                         if (rType === 'HoaDon') {
                                             document.getElementById('report-type').value = 'HD01';
                                             document.getElementById('report-type').dispatchEvent(new Event('change'));
-                                            document.getElementById('report-month').value = formData.get('reconcile_month');
-                                            document.getElementById('report-year').value = formData.get('reconcile_year');
+                                            document.getElementById('report-month').value = result.target_month;
+                                            document.getElementById('report-year').value = result.target_year;
                                         } else {
                                             document.getElementById('report-date').value = formData.get('reconcile_date');
                                         }
@@ -399,137 +401,46 @@
                         }
                     }
                 } catch (error) {
-                    console.error("Chi tiết lỗi JS hoặc Mạng:", error);
-                    showMessage({ status: 'error', message: `Lỗi kết nối hoặc xử lý giao diện: ${error.message}` });
+                    showMessage({ status: 'error', message: `Lỗi: ${error.message}` });
                 } finally {
                     setButtonLoading(reconcileBtn, reconcileBtnText, reconcileBtnLoader, false, 'Thực hiện Đối soát');
                 }
             });
 
-            // Logic Render bảng kết quả (ÁP DỤNG LAZY RENDER)
             function renderReconciliationResults(data, type) {
                 let tableHeadersHtml = '';
                 let tableBodyHtml = '';
-
-                // BẢO VỆ DOM: Giới hạn chỉ vẽ tối đa 1.000 dòng để trình duyệt không bị sập.
                 const MAX_RENDER_ROWS = 1000;
                 const displayData = data.slice(0, MAX_RENDER_ROWS);
 
                 if (type === 'HoaDon') {
-                    tableHeadersHtml = `
-                        <th class="px-4 py-3 font-semibold text-left">CHXD</th>
-                        <th class="px-4 py-3 font-semibold text-left">Số Hóa Đơn</th>
-                        <th class="px-4 py-3 font-semibold text-right">Thành tiền PVOIL</th>
-                        <th class="px-4 py-3 font-semibold text-right">Thành tiền Thuế</th>
-                        <th class="px-4 py-3 font-semibold text-center">Tình trạng</th>`;
+                    tableHeadersHtml = `<th class="px-4 py-3 text-left">CHXD</th><th class="px-4 py-3 text-left">Số Hóa Đơn</th><th class="px-4 py-3 text-right">PVOIL</th><th class="px-4 py-3 text-right">Thuế</th><th class="px-4 py-3 text-center">Tình trạng</th>`;
                     displayData.forEach(item => {
                         const isMismatch = !item.is_match;
-                        const rowClass = isMismatch ? 'bg-red-50' : '';
                         const posVal = item.pos_value !== null ? item.pos_value.toLocaleString('vi-VN') : 'Không có';
                         const sseVal = item.sse_value !== null ? item.sse_value.toLocaleString('vi-VN') : 'Không có';
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span><br><span class="text-xs text-gray-500">${item.status}</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${rowClass}">
-                            <td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td>
-                            <td class="px-4 py-3 text-gray-700 font-mono text-sm">${item.invoice_id}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${posVal}</td>
-                            <td class="px-4 py-3 text-gray-700 text-right ${isMismatch ? 'font-bold' : ''}">${sseVal}</td>
-                            <td class="px-4 py-3 text-center">${resultCell}</td>
-                        </tr>`;
-                    });
-                } else if (type === 'TienMat') {
-                    tableHeadersHtml = `<th class="px-4 py-3 font-semibold text-left">Cửa hàng</th><th class="px-4 py-3 font-semibold text-left">Đối tượng</th><th class="px-4 py-3 font-semibold text-right">Tiền mặt POS</th><th class="px-4 py-3 font-semibold text-right">Tiền mặt KT</th><th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    displayData.forEach(item => {
-                        const isMismatch = !item.is_match;
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td><td class="px-4 py-3 text-gray-700">${item.product_name}</td><td class="px-4 py-3 text-gray-700 text-right">${item.pos_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-gray-700 text-right">${item.sse_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-center">${resultCell}</td></tr>`;
-                    });
-                } else if (type === 'CongNo') {
-                    tableHeadersHtml = `<th class="px-4 py-3 font-semibold text-left">Cửa hàng</th><th class="px-4 py-3 font-semibold text-left">Mã/Tên Khách</th><th class="px-4 py-3 font-semibold text-right">Nợ POS</th><th class="px-4 py-3 font-semibold text-right">Nợ KT</th><th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
-                    displayData.forEach(item => {
-                        const isMismatch = !item.is_match;
                         const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span><br><span class="text-xs">${item.status}</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td><td class="px-4 py-3 text-gray-700">${item.customer_code} - ${item.customer_name}</td><td class="px-4 py-3 text-gray-700 text-right">${item.pos_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-gray-700 text-right">${item.sse_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-center">${resultCell}</td></tr>`;
+                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3 font-medium">${item.chxd_name}</td><td class="px-4 py-3 font-mono">${item.invoice_id}</td><td class="px-4 py-3 text-right">${posVal}</td><td class="px-4 py-3 text-right">${sseVal}</td><td class="px-4 py-3 text-center">${resultCell}</td></tr>`;
                     });
                 } else {
-                    tableHeadersHtml = `<th class="px-4 py-3 font-semibold text-left">Cửa hàng</th><th class="px-4 py-3 font-semibold text-left">Mặt hàng</th><th class="px-4 py-3 font-semibold text-right">SL POS</th><th class="px-4 py-3 font-semibold text-right">SL Kế toán</th><th class="px-4 py-3 font-semibold text-center">Kết quả</th>`;
+                    // Cấu trúc cũ cho các loại đối soát khác
+                    tableHeadersHtml = `<th class="px-4 py-3 text-left">Cửa hàng</th><th class="px-4 py-3 text-left">Đối tượng</th><th class="px-4 py-3 text-right">POS</th><th class="px-4 py-3 text-right">KT</th><th class="px-4 py-3 text-center">Kết quả</th>`;
                     displayData.forEach(item => {
                         const isMismatch = !item.is_match;
-                        const resultCell = isMismatch ? `<span class="font-bold text-red-600">❌ LỆCH</span>` : `<span class="font-bold text-green-600">✅ Khớp</span>`;
-                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3 font-medium text-gray-900">${item.chxd_name}</td><td class="px-4 py-3 text-gray-700">${item.product_name}</td><td class="px-4 py-3 text-gray-700 text-right">${item.pos_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-gray-700 text-right">${item.sse_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-center">${resultCell}</td></tr>`;
+                        tableBodyHtml += `<tr class="${isMismatch ? 'bg-red-50' : ''}"><td class="px-4 py-3">${item.chxd_name}</td><td class="px-4 py-3">${item.customer_name || item.product_name}</td><td class="px-4 py-3 text-right">${item.pos_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-right">${item.sse_value.toLocaleString('vi-VN')}</td><td class="px-4 py-3 text-center">${isMismatch ? '❌ LỆCH' : '✅ Khớp'}</td></tr>`;
                     });
                 }
 
-                // Cảnh báo người dùng nếu dữ liệu bị ẩn bớt do quá dài
-                if (data.length > MAX_RENDER_ROWS) {
-                    const remaining = data.length - MAX_RENDER_ROWS;
-                    tableBodyHtml += `<tr><td colspan="5" class="px-4 py-4 text-center font-bold text-blue-600 bg-blue-50">... Đã ẩn bớt ${remaining.toLocaleString('vi-VN')} kết quả phía dưới để chống treo trình duyệt. Vui lòng bấm "Tải về file Excel" để xem toàn bộ chi tiết. ...</td></tr>`;
-                }
-
-                // Nhãn thông báo đặc biệt cho chế độ Quản trị ngoại lệ
-                let extraNotice = type === 'HoaDon' ? '<p class="text-sm text-red-600 font-bold mt-1">💡 CHẾ ĐỘ NGOẠI LỆ: Bảng này chỉ liệt kê các Hóa đơn LỆCH hoặc THIẾU.</p>' : '';
-
-                let fullHtml = `<div class="flex justify-between items-center mb-4">
-                                <div>
-                                    <h3 class="text-xl font-bold text-gray-800">Kết quả Đối soát</h3>
-                                    ${extraNotice}
-                                </div>
-                                <button id="download-excel-btn" class="py-2 px-4 border rounded-md shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700">
-                                    Tải về file Excel
-                                </button>
-                            </div>
-                            <div class="overflow-x-auto rounded-lg border border-gray-200">
-                                <table class="min-w-full divide-y-2 divide-gray-200 bg-white text-sm">
-                                    <thead class="bg-gray-50">
-                                        <tr>${tableHeadersHtml}</tr>
-                                    </thead>
-                                    <tbody class="divide-y divide-gray-200">${tableBodyHtml}</tbody>
-                                </table>
-                            </div>`;
-                resultsContainer.innerHTML = fullHtml;
+                resultsContainer.innerHTML = `<div class="flex justify-between items-center mb-4"><h3>Kết quả Đối soát</h3><button id="download-excel-btn" class="bg-emerald-600 text-white p-2 rounded">Tải về Excel</button></div><div class="overflow-x-auto"><table class="min-w-full divide-y divide-gray-200">${tableHeadersHtml}${tableBodyHtml}</table></div>`;
                 resultsContainer.classList.remove('hidden');
-
                 document.getElementById('download-excel-btn').addEventListener('click', downloadExcelFile);
             }
 
             async function downloadExcelFile() {
-                if (!reconciliationResultPayload.data || reconciliationResultPayload.data.length === 0) {
-                    alert("Không có dữ liệu để tải về.");
-                    return;
-                }
-                const btn = document.getElementById('download-excel-btn');
-                btn.textContent = 'Đang tạo file Excel (Vui lòng chờ)...';
-                btn.disabled = true;
-
-                try {
-                    const response = await fetch('/download_excel', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(reconciliationResultPayload)
-                    });
-                    if (!response.ok) throw new Error('Lỗi tạo file');
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.style.display = 'none';
-                    a.href = url;
-                    const disposition = response.headers.get('Content-Disposition');
-                    let filename = 'KetQuaDoiSoat.xlsx';
-                    if (disposition && disposition.indexOf('attachment') !== -1) {
-                        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
-                        const matches = filenameRegex.exec(disposition);
-                        if (matches != null && matches[1]) filename = matches[1].replace(/['"]/g, '');
-                    }
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    document.body.removeChild(a);
-                } catch (error) {
-                    alert('Lỗi tải file.');
-                } finally {
-                    btn.textContent = 'Tải về file Excel';
-                    btn.disabled = false;
-                }
+                const response = await fetch('/download_excel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reconciliationResultPayload) });
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = 'KetQuaDoiSoat.xlsx'; a.click();
             }
 
             function setButtonLoading(btn, btnText, btnLoader, isLoading, loadingText) {
@@ -555,9 +466,7 @@
                 else statusMessage.classList.add('bg-blue-100', 'text-blue-800');
                 statusMessage.classList.remove('hidden');
             }
-            function hideMessage() {
-                document.getElementById('status-message').classList.add('hidden');
-            }
+            function hideMessage() { document.getElementById('status-message').classList.add('hidden'); }
         });
     </script>
 </body>

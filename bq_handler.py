@@ -7,7 +7,6 @@ import os
 
 # =====================================================================
 # BẢNG ÁNH XẠ (MAPPING) TÊN CỘT
-# BigQuery không chấp nhận dấu cách, dấu ngoặc hay tiếng Việt có dấu.
 # =====================================================================
 COLUMN_MAPPING = {
     'Nam_Bao_Cao': 'Nam_Bao_Cao',
@@ -34,19 +33,15 @@ COLUMN_MAPPING = {
 }
 
 def get_bq_client():
-    """Khởi tạo BigQuery Client tận dụng chứng chỉ Google hiện có."""
     creds = google_handler.get_google_credentials()
-    
-    # Sửa lỗi: Lấy project_id từ file client_secret.json thay vì từ object creds (do user token không có project_id)
     project_id = None
     try:
         with open('client_secret.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
             project_id = data.get('installed', {}).get('project_id') or data.get('web', {}).get('project_id')
-    except Exception as e:
-        print(f"[Cảnh báo] Không thể đọc client_secret.json: {e}")
+    except Exception:
+        pass
         
-    # Phương án dự phòng: Đọc từ biến môi trường nếu không có file
     if not project_id:
         project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
         
@@ -56,17 +51,13 @@ def get_bq_client():
     return bigquery.Client(credentials=creds, project=project_id)
 
 def init_bq_table():
-    """Khởi tạo Bảng HD01_Master_Data với Partition (Phân vùng) và Cluster (Gom cụm)."""
     client = get_bq_client()
     dataset_id = f"{client.project}.pvoil_data"
     table_id = f"{dataset_id}.HD01_Master_Data"
-
-    # Tạo Dataset nếu chưa tồn tại
     dataset = bigquery.Dataset(dataset_id)
-    dataset.location = "asia-southeast1" # Đặt máy chủ tại Singapore
+    dataset.location = "asia-southeast1"
     dataset = client.create_dataset(dataset, exists_ok=True)
 
-    # Khai báo cấu trúc các cột
     schema = [
         bigquery.SchemaField("Nam_Bao_Cao", "INTEGER", mode="REQUIRED"),
         bigquery.SchemaField("Thang_Bao_Cao", "INTEGER", mode="REQUIRED"),
@@ -90,91 +81,50 @@ def init_bq_table():
         bigquery.SchemaField("Tien_Thue", "FLOAT"),
         bigquery.SchemaField("Tong_Tien", "FLOAT"),
     ]
-
     table = bigquery.Table(table_id, schema=schema)
-    
-    # 1. Kỹ thuật Partition: Chia ngăn kéo theo Tháng (Từ 1 đến 12)
     table.range_partitioning = bigquery.RangePartitioning(
         field="Thang_Bao_Cao",
         range_=bigquery.PartitionRange(start=1, end=13, interval=1)
     )
-    # 2. Kỹ thuật Cluster: Gom nhóm theo Cửa hàng để tăng tốc quét
     table.clustering_fields = ["Ma_CHXD"]
-
-    table = client.create_table(table, exists_ok=True)
-    print(f"[BigQuery] Đã khởi tạo/Kiểm tra sẵn sàng Bảng: {table_id}")
+    client.create_table(table, exists_ok=True)
     return table_id
 
-def delete_old_data(store_code: str, report_month: int, report_year: int):
-    """Xóa dữ liệu cũ (Dọn rác) trước khi ghi đè để đảm bảo không bị trùng lặp."""
+def delete_old_data(store_code, report_month, report_year):
     client = get_bq_client()
     table_id = f"{client.project}.pvoil_data.HD01_Master_Data"
-    
-    query = f"""
-        DELETE FROM `{table_id}` 
-        WHERE Ma_CHXD = '{store_code}' 
-          AND Thang_Bao_Cao = {int(report_month)} 
-          AND Nam_Bao_Cao = {int(report_year)}
-    """
+    query = f"DELETE FROM `{table_id}` WHERE Ma_CHXD = '{store_code}' AND Thang_Bao_Cao = {int(report_month)} AND Nam_Bao_Cao = {int(report_year)}"
     try:
-        job = client.query(query)
-        job.result()  # Đợi thực thi xong
+        client.query(query).result()
     except Exception as e:
-        error_msg = str(e).lower()
-        if "billing" in error_msg or "403" in error_msg:
-            print(f"     [Cảnh báo BigQuery] Máy chủ Google đang chờ đồng bộ Billing. Hệ thống bỏ qua lệnh xóa và tự động bơm nối tiếp.")
+        if "billing" in str(e).lower():
+            print("     [Cảnh báo BigQuery] Billing chưa enable, tự động Append.")
         else:
-            print(f"     [Lỗi BigQuery] Không thể dọn dữ liệu cũ: {e}")
+            print(f"     [Lỗi BigQuery] {e}")
 
-def upload_dataframe(df: pd.DataFrame, store_code: str, report_month: int, report_year: int):
-    """Hành động Bơm (Load) Dữ liệu lên Google Cloud."""
-    if df is None or df.empty:
-        return
-    
-    # 1. Bơm thêm 3 cột Nhận diện Hệ thống
+def upload_dataframe(df, store_code, report_month, report_year):
+    if df is None or df.empty: return
     df['Nam_Bao_Cao'] = int(report_year)
     df['Thang_Bao_Cao'] = int(report_month)
     df['Mã_CHXD'] = store_code
-
-    # 2. Đổi tên cột chuẩn mực (Tránh tiếng Việt)
     df_bq = df.rename(columns=COLUMN_MAPPING)
-    
-    # 3. Ép kiểu chuẩn: Xóa dấu phẩy nghìn, chuyển thành số thực (Float)
     float_cols = ['So_Luong', 'Don_Gia', 'Tien_Chua_Thue', 'Tien_Thue', 'Tong_Tien']
     for col in float_cols:
         if col in df_bq.columns:
-            df_bq[col] = pd.to_numeric(
-                df_bq[col].astype(str).str.replace(',', '').str.replace(' ', ''), 
-                errors='coerce'
-            ).fillna(0)
-    
-    # Chỉ giữ lại các cột có định nghĩa trong BQ
+            df_bq[col] = pd.to_numeric(df_bq[col].astype(str).str.replace(',', '').str.replace(' ', ''), errors='coerce').fillna(0)
     valid_cols = list(COLUMN_MAPPING.values())
     df_bq = df_bq[[c for c in valid_cols if c in df_bq.columns]].copy()
-    
-    # 4. Bơm lên BigQuery
     client = get_bq_client()
     table_id = f"{client.project}.pvoil_data.HD01_Master_Data"
-    
-    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
-    job = client.load_table_from_dataframe(df_bq, table_id, job_config=job_config)
-    job.result()  # Chờ upload hoàn tất
+    client.load_table_from_dataframe(df_bq, table_id, job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")).result()
 
-def get_aggregated_data(report_month: int, report_year: int):
-    """
-    Sức mạnh SQL: Ra lệnh cho BigQuery khử trùng lặp và tính tổng toàn bộ dữ liệu.
-    Trả về 2 bảng siêu nhỏ: 1 bảng tổng hợp theo Hàng Hóa, 1 bảng đếm theo Trạng Thái.
-    """
+def get_aggregated_data(report_month, report_year):
     client = get_bq_client()
     table_id = f"`{client.project}.pvoil_data.HD01_Master_Data`"
-    
-    # BẢNG 1: Tổng hợp Hàng hóa & Tính toán Cột ảo (Chuyển thẳng, Nội bộ)
     sql_prod = f"""
         WITH Deduplicated AS (
-            SELECT *
-            FROM {table_id}
+            SELECT * FROM {table_id}
             WHERE Thang_Bao_Cao = {int(report_month)} AND Nam_Bao_Cao = {int(report_year)}
-            -- THUẬT TOÁN MA THUẬT: Chỉ giữ lại hóa đơn được tải lên sau cùng (Khử trùng tuyệt đối)
             QUALIFY ROW_NUMBER() OVER(PARTITION BY Ma_CHXD, Ky_Hieu, So_HD ORDER BY Ngay_Hoa_Don DESC) = 1
         ),
         ValidData AS (
@@ -196,27 +146,33 @@ def get_aggregated_data(report_month: int, report_year: int):
         FROM ValidData
         GROUP BY Ten_CHXD, Nhom_Hang
     """
-
-    # BẢNG 2: Đếm số lượng hóa đơn theo Trạng Thái
     sql_status = f"""
         WITH Deduplicated AS (
-            SELECT *
-            FROM {table_id}
+            SELECT * FROM {table_id}
             WHERE Thang_Bao_Cao = {int(report_month)} AND Nam_Bao_Cao = {int(report_year)}
             QUALIFY ROW_NUMBER() OVER(PARTITION BY Ma_CHXD, Ky_Hieu, So_HD ORDER BY Ngay_Hoa_Don DESC) = 1
-        ),
-        ValidData AS (
-            SELECT * FROM Deduplicated
-            WHERE LOWER(TRIM(Trang_Thai_HD)) IN ('hoàn thành', 'thay thế', 'điều chỉnh tăng', 'điều chỉnh giảm', 'bị thay thế', 'bị điều chỉnh')
         )
         SELECT 
             Ten_CHXD,
             LOWER(TRIM(Trang_Thai_HD)) AS Trang_Thai_Lower,
             COUNT(1) AS So_Luong_Trang_Thai
-        FROM ValidData
+        FROM Deduplicated
+        WHERE LOWER(TRIM(Trang_Thai_HD)) IN ('hoàn thành', 'thay thế', 'điều chỉnh tăng', 'điều chỉnh giảm', 'bị thay thế', 'bị điều chỉnh')
         GROUP BY Ten_CHXD, Trang_Thai_Lower
     """
+    return client.query(sql_prod).to_dataframe(), client.query(sql_status).to_dataframe()
 
-    df_prod = client.query(sql_prod).to_dataframe()
-    df_status = client.query(sql_status).to_dataframe()
-    return df_prod, df_status
+def get_raw_hd01_data(month, year, store_code='ALL'):
+    """Tính năng mới: Truy vấn 100% cột dữ liệu thô từ BigQuery."""
+    client = get_bq_client()
+    table_id = f"`{client.project}.pvoil_data.HD01_Master_Data`"
+    where_clause = f"WHERE Thang_Bao_Cao = {int(month)} AND Nam_Bao_Cao = {int(year)}"
+    if store_code and store_code != 'ALL':
+        where_clause += f" AND Ma_CHXD = '{store_code}'"
+    query = f"""
+        SELECT * FROM {table_id}
+        {where_clause}
+        QUALIFY ROW_NUMBER() OVER(PARTITION BY Ma_CHXD, Ky_Hieu, So_HD ORDER BY Ngay_Hoa_Don DESC) = 1
+        ORDER BY Ten_CHXD, Ngay_Hoa_Don, So_HD
+    """
+    return client.query(query).to_dataframe()

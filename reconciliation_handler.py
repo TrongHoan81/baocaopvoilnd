@@ -514,10 +514,11 @@ def _vn_normalize(s: str) -> str:
     s = "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")
     return re.sub(r"[\s\._\-]+", " ", s).strip()
 
-def read_tax_excel_file(file_stream, target_month=None, target_year=None, progress_callback=None):
+def read_tax_excel_file(file_stream, progress_callback=None):
     """
     CHIẾN LƯỢC TỐI ƯU RAM: CHỈ ĐỌC CÁC CỘT CẦN THIẾT TỪ FILE 50MB DƯỚI DẠNG TEXT (dtype=str).
     Sử dụng Thuật toán Định vị Không va chạm + Blacklist để loại bỏ cột Người Bán.
+    Tự động trích xuất Tháng/Năm từ cột Ngày Hóa Đơn.
     """
     try:
         if progress_callback: progress_callback(".... Đang tìm kiếm các cột mục tiêu.....")
@@ -596,7 +597,7 @@ def read_tax_excel_file(file_stream, target_month=None, target_year=None, progre
 
         sorted_indices = sorted(list(col_indices.values()))
 
-        if progress_callback: progress_callback(".... Đang đọc và hút dữ liệu từ bảng kê của cơ quan thuế....")
+        if progress_callback: progress_callback(".... Đang đọc và hút dữ liệu từ bảng kê của cơ quan thuế .....")
 
         # BƯỚC 3: Đọc file lần 2 (FIX 2: Thêm dtype=str để không bao giờ bị mất số 0 ở đầu)
         file_stream.seek(0)
@@ -610,19 +611,21 @@ def read_tax_excel_file(file_stream, target_month=None, target_year=None, progre
             
         tax_df.columns = new_col_names
 
-        # Kiểm tra tính toàn vẹn của Thời gian (Sử dụng dayfirst=True để an toàn với định dạng ngày VN)
+        # Kiểm tra tính toàn vẹn của Thời gian và Tự động trích xuất Tháng/Năm
         if 'NgayLap' in tax_df.columns:
             tax_df['NgayLap'] = pd.to_datetime(tax_df['NgayLap'], errors='coerce', dayfirst=True)
             tax_df = tax_df.dropna(subset=['NgayLap']) 
             unique_months = tax_df['NgayLap'].dt.to_period('M').unique()
             if len(unique_months) > 1:
-                raise ValueError(f"Bảng kê thuế chứa dữ liệu của nhiều tháng khác nhau ({', '.join([str(m) for m in unique_months])}).")
+                raise ValueError(f"File dữ liệu không hợp lệ: Bảng kê chứa dữ liệu của nhiều tháng khác nhau ({', '.join([str(m) for m in unique_months])}). Vui lòng chỉ tải bảng kê của đúng 1 tháng duy nhất!")
             
-            if target_month and target_year and len(unique_months) == 1:
-                file_m = unique_months[0].month
-                file_y = unique_months[0].year
-                if str(file_m) != str(target_month) or str(file_y) != str(target_year):
-                    raise ValueError(f"Bảng kê thuế bạn tải lên là của tháng {file_m}/{file_y}, không khớp với lựa chọn ({target_month}/{target_year}).")
+            if len(unique_months) == 1:
+                target_month = unique_months[0].month
+                target_year = unique_months[0].year
+            else:
+                raise ValueError("Không tìm thấy dữ liệu ngày tháng hợp lệ trong Bảng kê Thuế.")
+        else:
+             raise ValueError("Không tìm thấy cột Ngày lập/Ngày hóa đơn trong Bảng kê Thuế.")
 
         # Chuẩn hóa kiểu dữ liệu trước khi đẩy lên mây
         for c in ['TienChuaThue', 'TienThue', 'TongTien']:
@@ -632,14 +635,14 @@ def read_tax_excel_file(file_stream, target_month=None, target_year=None, progre
         for c in ['KyHieu', 'SoHD', 'KhachHang', 'MST']:
             if c in tax_df.columns: tax_df[c] = tax_df[c].astype(str).fillna('')
 
-        if progress_callback: progress_callback("..... Đang tạo Chứng minh thư Hóa đơn (HD_ID) .....")
+        if progress_callback: progress_callback(".... Đang tạo Chứng minh thư Hóa đơn (HD_ID) ....")
 
         # Xóa các hậu tố ".0" (nếu có do Excel sinh ra) và tạo ID
         tx_sohd_str = tax_df['SoHD'].str.replace(r'\.0$', '', regex=True)
         tax_df['HD_ID'] = tax_df['KyHieu'].str.strip() + "_" + tx_sohd_str.str.replace("'", "").str.strip().str.lstrip('0')
         tax_df = tax_df[~tax_df['HD_ID'].str.contains('nan', case=False, na=False)]
 
-        return tax_df
+        return tax_df, target_month, target_year
 
     except Exception as e:
         raise ValueError(f"Lỗi đọc file Thuế: {str(e)}")
@@ -659,14 +662,14 @@ def reconcile_invoice_data_bq(report_month, report_year, tax_df, progress_callba
     temp_table_id = f"{client.project}.pvoil_data.Temp_Tax_Data_{uuid.uuid4().hex[:8]}"
     
     try:
-        if progress_callback: progress_callback("..... Đang tải dữ liệu bảng kê thuế lên BigQuery.....")
+        if progress_callback: progress_callback(".... Đang tải dữ liệu bảng kê thuế lên BigQuery....")
         
         # 2. Bơm file Thuế (đã rút gọn chỉ còn vài MB) lên BigQuery
         job_config = bq_handler.bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
         job = client.load_table_from_dataframe(tax_df, temp_table_id, job_config=job_config)
         job.result() # Đợi upload xong
 
-        if progress_callback: progress_callback("...... Đang chờ kết quả đối soát từ BigQuery (So khớp chéo)......")
+        if progress_callback: progress_callback(".... Đang chờ kết quả đối soát từ BigQuery (So khớp chéo)....")
         
         # 3. Kích hoạt Lệnh SQL So Khớp Chéo
         sql_query = f"""
@@ -722,7 +725,7 @@ def reconcile_invoice_data_bq(report_month, report_year, tax_df, progress_callba
 
         mismatched_df = client.query(sql_query).to_dataframe()
         
-        if progress_callback: progress_callback("...... Đang nhận kết quả từ BigQuery.........")
+        if progress_callback: progress_callback(".... Đang nhận kết quả từ BigQuery....")
         
     finally:
         # 5. DỌN DẸP CHIẾN TRƯỜNG
@@ -737,10 +740,10 @@ def reconcile_invoice_data_bq(report_month, report_year, tax_df, progress_callba
         status_msgs = []
         is_missing = False
         if pd.isna(row.get('KyHieu_pv')):
-            status_msgs.append("❗ Chỉ có trên Bảng kê Thuế (Không có trên bảng kê POS)")
+            status_msgs.append("❗ Chỉ có trên Bảng kê Thuế (Không có trên PVOIL)")
             is_missing = True
         elif pd.isna(row.get('KyHieu_tx')):
-            status_msgs.append("❗ Chỉ có trên Bảng kê POS (Không có trên Thuế)")
+            status_msgs.append("❗ Chỉ có trên GSheet PVOIL (Không có trên Thuế)")
             is_missing = True
         else:
             name_pv = _vn_normalize(str(row.get('KhachHang_pv', '')))

@@ -18,6 +18,8 @@ import config
 import google_handler
 import reconciliation_handler
 from tasks import download_report_generator
+import bq_handler
+import raw_data_handler # IMPORT FILE NGUYÊN TỬ MỚI
 
 PROXY_MODE = os.getenv("PROXY_DOWNLOAD_VIA_VPS", "0") == "1"
 VPS_BASE_URL = os.getenv("VPS_BASE_URL", "").rstrip("/")
@@ -180,6 +182,29 @@ def aggregate_hd01():
         print(f"Lỗi Aggregate BigQuery: {e}")
         return f"Lỗi máy chủ nội bộ: {str(e)}", 500
 
+@app.route('/export_raw_hd01', methods=['GET'])
+def export_raw_hd01():
+    """API Mới: Tải dữ liệu thô HD01 từ BigQuery."""
+    try:
+        month = request.args.get('month', '').strip()
+        year = request.args.get('year', '').strip()
+        station_code = request.args.get('store_code', 'ALL').strip()
+        
+        if not month or not year: return "Thiếu tham số tháng/năm", 400
+        
+        df_raw = bq_handler.get_raw_hd01_data(month, year, station_code)
+        if df_raw.empty: return f"Không tìm thấy dữ liệu cho tháng {month}/{year}", 404
+            
+        excel_bytes = raw_data_handler.export_to_excel_raw(df_raw)
+        
+        store_label = station_code if station_code != 'ALL' else "TatCaCHXD"
+        filename = f"DataTho_HD01_{store_label}_{int(month):02d}_{year}.xlsx"
+            
+        return send_file(excel_bytes, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        print(f"Lỗi Export Raw: {e}")
+        return f"Lỗi máy chủ: {str(e)}", 500
+
 # ==========================
 # ROUTE TRUYỀN DỮ LIỆU
 # ==========================
@@ -292,54 +317,46 @@ def reconcile():
             return jsonify({"status": "error", "message": "Vui lòng tải lên file từ phần mềm kế toán."}), 400
 
         sse_file = request.files['accounting_file']
-        
-        # Rất Quan Trọng: Đọc toàn bộ file vào RAM ngay lập tức để tránh Request bị đóng ngắt giữa chừng
         file_bytes = sse_file.read()
         file_name = sse_file.filename
 
-        # Lấy trước các biến Form
-        target_month = request.form.get('reconcile_month')
-        target_year = request.form.get('reconcile_year')
         reconcile_date_str = request.form.get('reconcile_date')
 
-        # === ĐỊNH NGHĨA GENERATOR ĐỂ XẢ DATA VỀ TRÌNH DUYỆT LIÊN TỤC ===
         def generate():
             q = queue.Queue()
 
-            # Hàm con để gửi Log vào hàng chờ
             def progress_callback(msg):
                 q.put({"type": "log", "message": msg})
 
-            # Hàm Công nhân: Làm việc mệt nhọc ở Background Thread
             def worker():
                 try:
                     file_stream = io.BytesIO(file_bytes)
-                    file_stream.name = file_name # Fake tên file để Pandas nhận diện định dạng
+                    file_stream.name = file_name
 
-                    # --- NHÁNH 1: ĐỐI SOÁT HÓA ĐƠN TRÊN BIGQUERY ---
                     if reconcile_type == 'HoaDon':
-                        if not target_month or not target_year:
-                            q.put({"type": "result", "status": "error", "message": "Thiếu tháng/năm đối soát hóa đơn."})
+                        import reconciliation_handler
+                        try:
+                            tax_df, target_month, target_year = reconciliation_handler.read_tax_excel_file(file_stream, progress_callback=progress_callback)
+                        except ValueError as ve:
+                            q.put({"type": "result", "status": "error", "message": str(ve)})
                             return
 
-                        progress_callback("... Đang kiểm tra dữ liệu BigQuery.....")
+                        progress_callback(f"...... Đã nhận diện Bảng kê Thuế: Tháng {target_month} / Năm {target_year}. Đang kiểm tra dữ liệu PVOIL.........")
+                        
                         import bq_handler
                         client = bq_handler.get_bq_client()
                         query = f"SELECT 1 FROM `{client.project}.pvoil_data.HD01_Master_Data` WHERE Thang_Bao_Cao = {int(target_month)} AND Nam_Bao_Cao = {int(target_year)} LIMIT 1"
                         job = client.query(query)
-                        
+
                         if len(list(job.result())) == 0:
-                            q.put({'type': 'result', 'status': 'report_not_found', 'message': f'Dữ liệu hóa đơn tháng {target_month}/{target_year} chưa có trên hệ thống BigQuery.'})
+                            q.put({'type': 'result', 'status': 'report_not_found', 'message': f'Dữ liệu hóa đơn tháng {target_month}/{target_year} chưa có trên hệ thống BigQuery.', 'target_month': target_month, 'target_year': target_year})
                             return
 
-                        import reconciliation_handler
-                        tax_df = reconciliation_handler.read_tax_excel_file(file_stream, target_month=target_month, target_year=target_year, progress_callback=progress_callback)
                         results = reconciliation_handler.reconcile_invoice_data_bq(target_month, target_year, tax_df, progress_callback=progress_callback)
 
                         progress_callback("...... Đang vẽ bảng kết quả........")
                         q.put({'type': 'result', 'status': 'success', 'reconcile_type': reconcile_type, 'data': results})
 
-                    # --- NHÁNH 2: ĐỐI SOÁT BH03 TRÊN GOOGLE DRIVE (Giữ nguyên logic cũ) ---
                     else:
                         progress_callback("... Đang xác thực với Google Drive.....")
                         creds = google_handler.get_google_credentials()
