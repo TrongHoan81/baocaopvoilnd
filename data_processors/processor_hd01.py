@@ -189,6 +189,7 @@ def aggregate_hd01_data(dict_dfs: dict) -> io.BytesIO:
             p_data = store_prod[store_prod['Nhóm_Hàng'] == p]
             if not p_data.empty:
                 row_data[('Tổng số lượng hóa đơn', p)] = p_data['So_Luong_Dong'].iloc[0]
+                row_data[('Sản lượng', p)] = p_data['Tong_San_Luong'].iloc[0]
                 row_data[('Tổng số tiền chưa thuế', p)] = p_data['Tien_Chua_Thue'].iloc[0]
                 row_data[('Tiền thuế', p)] = p_data['Tien_Thue'].iloc[0]
                 row_data[('Tổng thanh toán', p)] = p_data['Tong_Thanh_Toan'].iloc[0]
@@ -196,6 +197,7 @@ def aggregate_hd01_data(dict_dfs: dict) -> io.BytesIO:
                 row_data[('Giao dịch nội bộ', p)] = p_data['SL_NoiBo'].iloc[0]
             else:
                 row_data[('Tổng số lượng hóa đơn', p)] = 0
+                row_data[('Sản lượng', p)] = 0
                 row_data[('Tổng số tiền chưa thuế', p)] = 0
                 row_data[('Tiền thuế', p)] = 0
                 row_data[('Tổng thanh toán', p)] = 0
@@ -278,12 +280,12 @@ def generate_excel_from_bq(agg_prod: pd.DataFrame, agg_status: pd.DataFrame) -> 
     """
     if agg_prod.empty: return None
 
-    target_products = ['Xăng RON95 Mức 3', 'Xăng E5 RON92 Mức 2', 'Dầu Điêzen 0,001S Mức 5', 'Dầu Điêzen 0,05S Mức 2']
+    target_products = ['Xăng RON95 Mức 3', 'Xăng E5 RON92 Mức 2', 'Dầu Điêzen 0,001S Mức 5', 'Dầu Điêzen 0,05S Mức 2', 'Xăng E10 RON95 Mức 3']
     products = target_products + ['Mặt hàng khác']
     statuses = ['Hoàn thành', 'Thay thế', 'Điều chỉnh tăng', 'Điều chỉnh giảm', 'Bị thay thế', 'Bị điều chỉnh']
     
     tuples = [('STT', ''), ('Đơn vị', '')]
-    for m in ['Tổng số lượng hóa đơn', 'Tổng số tiền chưa thuế', 'Tiền thuế', 'Tổng thanh toán', 'Giao dịch chuyển thẳng', 'Giao dịch nội bộ']:
+    for m in ['Tổng số lượng hóa đơn', 'Sản lượng', 'Tổng số tiền chưa thuế', 'Tiền thuế', 'Tổng thanh toán', 'Giao dịch chuyển thẳng', 'Giao dịch nội bộ']:
         for p in products: tuples.append((m, p))
     for s in statuses: tuples.append(('Hóa đơn', s))
 
@@ -299,6 +301,7 @@ def generate_excel_from_bq(agg_prod: pd.DataFrame, agg_status: pd.DataFrame) -> 
             p_data = store_prod[store_prod['Nhom_Hang'] == p]
             if not p_data.empty:
                 row_data[('Tổng số lượng hóa đơn', p)] = p_data['So_Luong_Dong'].iloc[0]
+                row_data[('Sản lượng', p)] = p_data['Tong_San_Luong'].iloc[0]
                 row_data[('Tổng số tiền chưa thuế', p)] = p_data['Tien_Chua_Thue'].iloc[0]
                 row_data[('Tiền thuế', p)] = p_data['Tien_Thue'].iloc[0]
                 row_data[('Tổng thanh toán', p)] = p_data['Tong_Thanh_Toan'].iloc[0]
@@ -306,6 +309,7 @@ def generate_excel_from_bq(agg_prod: pd.DataFrame, agg_status: pd.DataFrame) -> 
                 row_data[('Giao dịch nội bộ', p)] = p_data['SL_NoiBo'].iloc[0]
             else:
                 row_data[('Tổng số lượng hóa đơn', p)] = 0
+                row_data[('Sản lượng', p)] = 0
                 row_data[('Tổng số tiền chưa thuế', p)] = 0
                 row_data[('Tiền thuế', p)] = 0
                 row_data[('Tổng thanh toán', p)] = 0
@@ -350,7 +354,7 @@ def generate_excel_from_bq(agg_prod: pd.DataFrame, agg_status: pd.DataFrame) -> 
         worksheet.merge_cells(start_row=1, start_column=2, end_row=2, end_column=2)
 
         start_col = 3
-        for _ in range(6): # 6 nhóm metrics
+        for _ in range(7): # 7 nhóm metrics
             end_col = start_col + len(products) - 1
             worksheet.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
             start_col = end_col + 1

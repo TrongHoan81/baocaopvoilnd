@@ -134,10 +134,11 @@ def get_aggregated_data(report_month, report_year):
         SELECT 
             Ten_CHXD,
             CASE 
-                WHEN TRIM(Hang_Hoa) IN ('Xăng RON95 Mức 3', 'Xăng E5 RON92 Mức 2', 'Dầu Điêzen 0,001S Mức 5', 'Dầu Điêzen 0,05S Mức 2') THEN TRIM(Hang_Hoa)
+                WHEN TRIM(Hang_Hoa) IN ('Xăng RON95 Mức 3', 'Xăng E5 RON92 Mức 2', 'Dầu Điêzen 0,001S Mức 5', 'Dầu Điêzen 0,05S Mức 2', 'Xăng E10 RON95 Mức 3') THEN TRIM(Hang_Hoa)
                 ELSE 'Mặt hàng khác'
             END AS Nhom_Hang,
             COUNT(1) AS So_Luong_Dong,
+            SUM(So_Luong) AS Tong_San_Luong,
             SUM(Tien_Chua_Thue) AS Tien_Chua_Thue,
             SUM(Tien_Thue) AS Tien_Thue,
             SUM(Tong_Tien) AS Tong_Thanh_Toan,
