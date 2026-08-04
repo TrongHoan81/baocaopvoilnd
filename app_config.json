@@ -44,7 +44,9 @@
     "ND.CHXDND45": "CHXD Hoa Lư",
     "ND.CHXDND56": "CHXD Thiên Tôn",
     "ND.CHXDND58": "CHXD Trường Thi",
-    "ND.CHXDND57": "CHXD Hợp Hưng",   
+    "ND.CHXDND57": "CHXD Hợp Hưng",
+    "ND.CHXDND60": "CHXD Bảo Minh",
+    "ND.CHXDND59": "CHXD Đại Thắng",   
     "ND.CHXDND44": "CHXD Bái Đính"
   },
   "STORE_MAPPING_SSE_TO_POS": {
@@ -93,6 +95,8 @@
     "KDNL184": "ND.CHXDND56",
     "KDNL185": "ND.CHXDND57",
     "KDNL186": "ND.CHXDND58",
+    "KDNK187": "ND.CHXDND60",
+    "KDNL188": "ND.CHXDND59",
     "KDNL177": "ND.CHXDND44"
   },
   "STORE_MAPPING_CASH_SSE_TO_POS": {
@@ -141,6 +145,8 @@
     "KDNL079": "ND.CHXDND45",
     "KDNL085": "ND.CHXDND57",
     "KDNL086": "ND.CHXDND58",
+    "KDNK087": "ND.CHXDND60",
+    "KDNL088": "ND.CHXDND59",
     "KDNL077": "ND.CHXDND44"
   },
   "TARGET_PRODUCTS_BH03": [
